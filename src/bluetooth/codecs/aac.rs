@@ -7,12 +7,12 @@
 /// Bitrate: 256000 (3 bytes, big-endian)
 pub fn capabilities() -> Vec<u8> {
     vec![
-        0x80,       // MPEG-2 AAC LC
+        0x80,        // MPEG-2 AAC LC
         0x01 | 0x02, // 44100 + 48000 Hz
         0x04 | 0x08, // Mono + Stereo
         0x80 | 0x03, // VBR + bitrate high byte
-        0xE8,       // bitrate mid
-        0x00,       // bitrate low (256000 bps)
+        0xE8,        // bitrate mid
+        0x00,        // bitrate low (256000 bps)
     ]
 }
 
@@ -23,9 +23,9 @@ pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     }
     // Select AAC LC, 44100 Hz, Stereo, VBR, 256kbps
     vec![
-        remote[0] & 0x80,       // AAC LC
-        remote[1] & 0x01,       // 44100
-        remote[2] & 0x04,       // Stereo
+        remote[0] & 0x80, // AAC LC
+        remote[1] & 0x01, // 44100
+        remote[2] & 0x04, // Stereo
         remote[3] & 0x83,
         remote[4],
         remote[5],

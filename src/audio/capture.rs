@@ -89,7 +89,9 @@ impl AudioCapture {
                     Ok(_) => {
                         let samples: Vec<f32> = buf
                             .chunks_exact(4)
-                            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                            .map(|chunk| {
+                                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                            })
                             .collect();
                         let _ = sender.send(samples);
                     }

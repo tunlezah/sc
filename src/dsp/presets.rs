@@ -138,8 +138,8 @@ pub fn save_preset(name: &str, bands: &[EqBand]) -> Result<(), String> {
         bands: bands.iter().map(|b| b.gain_db).collect(),
     };
 
-    let toml_str =
-        toml::to_string_pretty(&preset).map_err(|e| format!("Failed to serialize preset: {}", e))?;
+    let toml_str = toml::to_string_pretty(&preset)
+        .map_err(|e| format!("Failed to serialize preset: {}", e))?;
 
     let path = dir.join(format!("{}.toml", sanitize_filename(name)));
     std::fs::write(&path, toml_str)
@@ -153,8 +153,7 @@ pub fn save_preset(name: &str, bands: &[EqBand]) -> Result<(), String> {
 pub fn delete_preset(name: &str) -> Result<(), String> {
     let path = preset_dir().join(format!("{}.toml", sanitize_filename(name)));
     if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("Failed to delete preset: {}", e))?;
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to delete preset: {}", e))?;
         info!("Deleted preset '{}'", name);
         Ok(())
     } else {
@@ -182,7 +181,13 @@ pub fn get_preset(name: &str) -> Option<Preset> {
 /// Sanitize a filename by removing non-alphanumeric characters (except dash/underscore).
 fn sanitize_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -210,7 +215,12 @@ mod tests {
     #[test]
     fn test_preset_band_counts() {
         for (name, preset) in &builtin_presets() {
-            assert_eq!(preset.bands.len(), NUM_BANDS, "Preset {} has wrong band count", name);
+            assert_eq!(
+                preset.bands.len(),
+                NUM_BANDS,
+                "Preset {} has wrong band count",
+                name
+            );
         }
     }
 
@@ -221,7 +231,9 @@ mod tests {
                 assert!(
                     *gain >= -12.0 && *gain <= 12.0,
                     "Preset {} band {} gain {} out of range",
-                    name, i, gain
+                    name,
+                    i,
+                    gain
                 );
             }
         }

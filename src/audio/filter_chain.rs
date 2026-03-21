@@ -41,7 +41,10 @@ impl FilterChainManager {
         std::fs::rename(&tmp_path, &self.config_path)
             .map_err(|e| format!("Failed to rename config: {}", e))?;
 
-        info!("Filter-chain config written to {}", self.config_path.display());
+        info!(
+            "Filter-chain config written to {}",
+            self.config_path.display()
+        );
 
         // Spawn the filter-chain process
         let child = Command::new("pipewire-filter-chain")

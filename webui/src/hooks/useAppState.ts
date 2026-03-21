@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import type { AppState, WsMessage, DeviceInfo } from '../types';
+import type { AppState, WsMessage } from '../types';
 import { WebSocketClient } from '../api/websocket';
 
 const defaultState: AppState = {

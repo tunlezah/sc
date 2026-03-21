@@ -31,7 +31,7 @@ function codecLabel(codec: string | null): string {
   return labels[codec] || codec;
 }
 
-export function DeviceList({ devices, activeDevice, status }: DeviceListProps) {
+export function DeviceList({ devices, activeDevice: _activeDevice, status }: DeviceListProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   const handleScan = () => {

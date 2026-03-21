@@ -166,39 +166,33 @@ impl BluetoothManager {
         }
     }
 
-    async fn handle_adapter_event(
-        &self,
-        adapter: &bluer::Adapter,
-        event: bluer::AdapterEvent,
-    ) {
+    async fn handle_adapter_event(&self, adapter: &bluer::Adapter, event: bluer::AdapterEvent) {
         match event {
-            bluer::AdapterEvent::DeviceAdded(addr) => {
-                match adapter.device(addr) {
-                    Ok(device) => {
-                        let name = device.alias().await.unwrap_or_else(|_| addr.to_string());
-                        let rssi = device.rssi().await.ok().flatten();
-                        let uuids: Vec<String> = device
-                            .uuids()
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|set| set.into_iter().map(|u| u.to_string()).collect())
-                            .unwrap_or_default();
+            bluer::AdapterEvent::DeviceAdded(addr) => match adapter.device(addr) {
+                Ok(device) => {
+                    let name = device.alias().await.unwrap_or_else(|_| addr.to_string());
+                    let rssi = device.rssi().await.ok().flatten();
+                    let uuids: Vec<String> = device
+                        .uuids()
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|set| set.into_iter().map(|u| u.to_string()).collect())
+                        .unwrap_or_default();
 
-                        discovery::handle_device_discovered(
-                            &self.state,
-                            addr.to_string(),
-                            name,
-                            rssi,
-                            uuids,
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        warn!("Failed to get discovered device {}: {}", addr, e);
-                    }
+                    discovery::handle_device_discovered(
+                        &self.state,
+                        addr.to_string(),
+                        name,
+                        rssi,
+                        uuids,
+                    )
+                    .await;
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to get discovered device {}: {}", addr, e);
+                }
+            },
             bluer::AdapterEvent::DeviceRemoved(addr) => {
                 discovery::remove_device(&self.state, &addr.to_string()).await;
             }
@@ -321,10 +315,7 @@ impl BluetoothManager {
                             )
                             .await;
                         } else if !connected
-                            && !matches!(
-                                state,
-                                DeviceState::Disconnected | DeviceState::Discovered
-                            )
+                            && !matches!(state, DeviceState::Disconnected | DeviceState::Discovered)
                         {
                             discovery::update_device_state(
                                 &self.state,

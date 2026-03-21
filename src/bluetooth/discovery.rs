@@ -51,11 +51,7 @@ pub async fn handle_device_discovered(
 }
 
 /// Update device state and emit appropriate events.
-pub async fn update_device_state(
-    state: &AppStateHandle,
-    address: &str,
-    new_state: DeviceState,
-) {
+pub async fn update_device_state(state: &AppStateHandle, address: &str, new_state: DeviceState) {
     let mut app = state.state.write().await;
     if let Some(device) = app.devices.get_mut(address) {
         let name = device.name.clone();
@@ -79,10 +75,10 @@ pub async fn update_device_state(
 
             if new_state == DeviceState::AudioActive {
                 app.active_device = Some(address.to_string());
-            } else if new_state == DeviceState::Disconnected {
-                if app.active_device.as_deref() == Some(address) {
-                    app.active_device = None;
-                }
+            } else if new_state == DeviceState::Disconnected
+                && app.active_device.as_deref() == Some(address)
+            {
+                app.active_device = None;
             }
 
             drop(app);
@@ -122,13 +118,17 @@ mod tests {
         assert!(has_a2dp_uuid(&[A2DP_SINK_UUID.to_string()]));
         assert!(has_a2dp_uuid(&[A2DP_SOURCE_UUID.to_string()]));
         assert!(has_a2dp_uuid(&[A2DP_SINK_UUID.to_uppercase()]));
-        assert!(!has_a2dp_uuid(&["00001101-0000-1000-8000-00805f9b34fb".to_string()]));
+        assert!(!has_a2dp_uuid(&[
+            "00001101-0000-1000-8000-00805f9b34fb".to_string()
+        ]));
         assert!(!has_a2dp_uuid(&[]));
     }
 
     #[test]
     fn test_is_bluetooth_audio_node() {
-        assert!(is_bluetooth_audio_node("bluez_input.AA_BB_CC_DD_EE_FF.a2dp_sink"));
+        assert!(is_bluetooth_audio_node(
+            "bluez_input.AA_BB_CC_DD_EE_FF.a2dp_sink"
+        ));
         assert!(is_bluetooth_audio_node("bluez_source.something"));
         assert!(is_bluetooth_audio_node("api.bluez5.something"));
         assert!(!is_bluetooth_audio_node("alsa_input.something"));

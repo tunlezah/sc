@@ -8,8 +8,8 @@ pub fn capabilities() -> Vec<u8> {
     vec![
         0xD7, 0x00, // Vendor ID: Qualcomm HD (little-endian)
         0x24, 0x00, // Codec ID: aptX HD (little-endian)
-        0x30,       // Sampling freqs: 44100 (0x20) | 48000 (0x10)
-        0x02,       // Channel mode: Stereo
+        0x30, // Sampling freqs: 44100 (0x20) | 48000 (0x10)
+        0x02, // Channel mode: Stereo
         0x00, 0x00, 0x00, 0x00, // Reserved/padding
     ]
 }
@@ -26,10 +26,7 @@ pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     };
 
     let mut config = vec![
-        remote[0], remote[1],
-        remote[2], remote[3],
-        freq,
-        0x02, // Stereo
+        remote[0], remote[1], remote[2], remote[3], freq, 0x02, // Stereo
     ];
     // Pad to match remote length
     while config.len() < remote.len() {

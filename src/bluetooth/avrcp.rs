@@ -116,12 +116,9 @@ impl AvrcpMonitor {
 
     async fn get_player_path(&self) -> Option<String> {
         let app = self.state.state.read().await;
-        app.active_device.as_ref().map(|addr| {
-            format!(
-                "/org/bluez/hci0/dev_{}/player0",
-                addr.replace(':', "_")
-            )
-        })
+        app.active_device
+            .as_ref()
+            .map(|addr| format!("/org/bluez/hci0/dev_{}/player0", addr.replace(':', "_")))
     }
 
     async fn poll_media_player(&mut self, connection: &zbus::Connection) {
@@ -151,7 +148,8 @@ impl AvrcpMonitor {
                     let mut app = self.state.state.write().await;
                     app.playback_status = status;
                 }
-                self.state.publish(SystemEvent::PlaybackStatusChanged { status });
+                self.state
+                    .publish(SystemEvent::PlaybackStatusChanged { status });
             }
         }
 
@@ -214,9 +212,8 @@ fn get_u64_value(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u64> {
 }
 
 fn get_u32_value(map: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    map.get(key).and_then(|v| {
-        <u32 as TryFrom<&OwnedValue>>::try_from(v).ok()
-    })
+    map.get(key)
+        .and_then(|v| <u32 as TryFrom<&OwnedValue>>::try_from(v).ok())
 }
 
 #[cfg(test)]
