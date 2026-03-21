@@ -22,7 +22,7 @@ export function AudioPlayer({ ws }: AudioPlayerProps) {
         rtcRef.current = client;
 
         // Listen for answers and ICE candidates
-        const _unsub = ws.current.onMessage((msg) => {
+        ws.current.onMessage((msg) => {
           if (msg.type === 'webrtc_answer') {
             client.handleAnswer(msg.data.sdp);
           } else if (msg.type === 'webrtc_ice_candidate') {
