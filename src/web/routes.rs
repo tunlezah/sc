@@ -114,7 +114,9 @@ async fn get_status(State(app): State<AppRouter>) -> Json<StatusResponse> {
     })
 }
 
-async fn get_devices(State(app): State<AppRouter>) -> Json<Vec<crate::bluetooth::device::DeviceInfo>> {
+async fn get_devices(
+    State(app): State<AppRouter>,
+) -> Json<Vec<crate::bluetooth::device::DeviceInfo>> {
     let state = app.state.state.read().await;
     Json(state.devices.values().cloned().collect())
 }
@@ -194,10 +196,7 @@ async fn get_eq(State(app): State<AppRouter>) -> Json<crate::state::EqSnapshot> 
     })
 }
 
-async fn post_eq(
-    State(app): State<AppRouter>,
-    Json(body): Json<EqRequest>,
-) -> Json<OkResponse> {
+async fn post_eq(State(app): State<AppRouter>, Json(body): Json<EqRequest>) -> Json<OkResponse> {
     let mut state = app.state.state.write().await;
 
     if let Some(band_updates) = body.bands {
@@ -216,7 +215,8 @@ async fn post_eq(
     let enabled = state.eq_enabled;
     drop(state);
 
-    app.state.publish(crate::state::SystemEvent::EqChanged { bands, enabled });
+    app.state
+        .publish(crate::state::SystemEvent::EqChanged { bands, enabled });
 
     ok_response()
 }

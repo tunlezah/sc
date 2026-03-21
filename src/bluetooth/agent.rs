@@ -30,7 +30,10 @@ impl SoundSyncAgent {
         device: ObjectPath<'_>,
         passkey: u32,
     ) -> zbus::fdo::Result<()> {
-        info!("Confirmation requested for {} with passkey {}", device, passkey);
+        info!(
+            "Confirmation requested for {} with passkey {}",
+            device, passkey
+        );
         if self.auto_pair {
             Ok(())
         } else {
@@ -74,10 +77,7 @@ pub async fn register_agent(
     let agent = SoundSyncAgent { auto_pair };
     let agent_path = crate::bluetooth::constants::AGENT_PATH;
 
-    connection
-        .object_server()
-        .at(agent_path, agent)
-        .await?;
+    connection.object_server().at(agent_path, agent).await?;
 
     // Call AgentManager1.RegisterAgent and RequestDefaultAgent
     let proxy = zbus::Proxy::new(
@@ -94,9 +94,7 @@ pub async fn register_agent(
         .await?;
     info!("Agent registered at {}", agent_path);
 
-    proxy
-        .call_method("RequestDefaultAgent", &(path,))
-        .await?;
+    proxy.call_method("RequestDefaultAgent", &(path,)).await?;
     info!("Agent set as default");
 
     Ok(())

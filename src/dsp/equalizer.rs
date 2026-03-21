@@ -35,16 +35,66 @@ impl EqBand {
 /// Default 10-band EQ configuration.
 pub fn default_bands() -> [EqBand; NUM_BANDS] {
     [
-        EqBand { freq: 60.0, gain_db: 0.0, q: 0.707, filter_type: FilterType::LowShelf },
-        EqBand { freq: 120.0, gain_db: 0.0, q: 1.414, filter_type: FilterType::Peaking },
-        EqBand { freq: 250.0, gain_db: 0.0, q: 1.414, filter_type: FilterType::Peaking },
-        EqBand { freq: 500.0, gain_db: 0.0, q: 1.414, filter_type: FilterType::Peaking },
-        EqBand { freq: 1000.0, gain_db: 0.0, q: 1.414, filter_type: FilterType::Peaking },
-        EqBand { freq: 2000.0, gain_db: 0.0, q: 1.414, filter_type: FilterType::Peaking },
-        EqBand { freq: 4000.0, gain_db: 0.0, q: 1.414, filter_type: FilterType::Peaking },
-        EqBand { freq: 8000.0, gain_db: 0.0, q: 1.820, filter_type: FilterType::Peaking },
-        EqBand { freq: 12000.0, gain_db: 0.0, q: 2.870, filter_type: FilterType::Peaking },
-        EqBand { freq: 16000.0, gain_db: 0.0, q: 0.707, filter_type: FilterType::HighShelf },
+        EqBand {
+            freq: 60.0,
+            gain_db: 0.0,
+            q: 0.707,
+            filter_type: FilterType::LowShelf,
+        },
+        EqBand {
+            freq: 120.0,
+            gain_db: 0.0,
+            q: 1.414,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 250.0,
+            gain_db: 0.0,
+            q: 1.414,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 500.0,
+            gain_db: 0.0,
+            q: 1.414,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 1000.0,
+            gain_db: 0.0,
+            q: 1.414,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 2000.0,
+            gain_db: 0.0,
+            q: 1.414,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 4000.0,
+            gain_db: 0.0,
+            q: 1.414,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 8000.0,
+            gain_db: 0.0,
+            q: 1.820,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 12000.0,
+            gain_db: 0.0,
+            q: 2.870,
+            filter_type: FilterType::Peaking,
+        },
+        EqBand {
+            freq: 16000.0,
+            gain_db: 0.0,
+            q: 0.707,
+            filter_type: FilterType::HighShelf,
+        },
     ]
 }
 
@@ -137,8 +187,8 @@ mod tests {
     fn test_default_bands_filter_types() {
         let bands = default_bands();
         assert_eq!(bands[0].filter_type, FilterType::LowShelf);
-        for i in 1..9 {
-            assert_eq!(bands[i].filter_type, FilterType::Peaking);
+        for band in &bands[1..9] {
+            assert_eq!(band.filter_type, FilterType::Peaking);
         }
         assert_eq!(bands[9].filter_type, FilterType::HighShelf);
     }

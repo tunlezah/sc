@@ -18,7 +18,7 @@ use crate::bluetooth::avrcp::{AvrcpCommand, AvrcpMonitor};
 use crate::bluetooth::manager::{BluetoothCommand, BluetoothManager};
 use crate::state::config::Config;
 use crate::state::AppStateHandle;
-use crate::web::routes::{AppRouter, create_router};
+use crate::web::routes::{create_router, AppRouter};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -107,7 +107,10 @@ async fn main() {
     };
 
     let app = create_router(app_router)
-        .nest_service("/", ServeDir::new(webui_path).append_index_html_on_directories(true))
+        .nest_service(
+            "/",
+            ServeDir::new(webui_path).append_index_html_on_directories(true),
+        )
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -143,7 +146,10 @@ fn ensure_xdg_runtime_dir() {
             std::env::set_var("XDG_RUNTIME_DIR", &dir);
             info!("Set XDG_RUNTIME_DIR={}", dir);
         } else {
-            tracing::warn!("XDG_RUNTIME_DIR not set and /run/user/{} doesn't exist", uid);
+            tracing::warn!(
+                "XDG_RUNTIME_DIR not set and /run/user/{} doesn't exist",
+                uid
+            );
         }
     }
 }

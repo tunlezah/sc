@@ -59,19 +59,14 @@ pub enum SystemEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BluetoothStatus {
     Ready,
     Scanning,
+    #[default]
     Unavailable,
     Error(String),
-}
-
-impl Default for BluetoothStatus {
-    fn default() -> Self {
-        Self::Unavailable
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,19 +78,14 @@ pub struct TrackInfo {
     pub track_number: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaybackStatus {
     Playing,
     Paused,
     Stopped,
+    #[default]
     Unknown,
-}
-
-impl Default for PlaybackStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl PlaybackStatus {
@@ -212,12 +202,27 @@ mod tests {
 
     #[test]
     fn test_playback_status_from_bluez() {
-        assert_eq!(PlaybackStatus::from_bluez("playing"), PlaybackStatus::Playing);
+        assert_eq!(
+            PlaybackStatus::from_bluez("playing"),
+            PlaybackStatus::Playing
+        );
         assert_eq!(PlaybackStatus::from_bluez("paused"), PlaybackStatus::Paused);
-        assert_eq!(PlaybackStatus::from_bluez("stopped"), PlaybackStatus::Stopped);
-        assert_eq!(PlaybackStatus::from_bluez("Playing"), PlaybackStatus::Playing);
-        assert_eq!(PlaybackStatus::from_bluez("unknown"), PlaybackStatus::Unknown);
-        assert_eq!(PlaybackStatus::from_bluez("garbage"), PlaybackStatus::Unknown);
+        assert_eq!(
+            PlaybackStatus::from_bluez("stopped"),
+            PlaybackStatus::Stopped
+        );
+        assert_eq!(
+            PlaybackStatus::from_bluez("Playing"),
+            PlaybackStatus::Playing
+        );
+        assert_eq!(
+            PlaybackStatus::from_bluez("unknown"),
+            PlaybackStatus::Unknown
+        );
+        assert_eq!(
+            PlaybackStatus::from_bluez("garbage"),
+            PlaybackStatus::Unknown
+        );
     }
 
     #[test]

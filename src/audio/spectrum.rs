@@ -28,7 +28,8 @@ impl SpectrumAnalyzer {
         // Hanning window
         let mut window = [0.0f32; FFT_SIZE];
         for (i, w) in window.iter_mut().enumerate() {
-            *w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos());
+            *w =
+                0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos());
         }
 
         Self {
@@ -117,8 +118,7 @@ fn map_to_bands(magnitudes: &[f32], sample_rate: f32, num_bands: usize) -> Vec<f
 
     (0..num_bands)
         .map(|i| {
-            let freq_low =
-                (log_min + (log_max - log_min) * i as f32 / num_bands as f32).exp();
+            let freq_low = (log_min + (log_max - log_min) * i as f32 / num_bands as f32).exp();
             let freq_high =
                 (log_min + (log_max - log_min) * (i + 1) as f32 / num_bands as f32).exp();
 
@@ -160,7 +160,11 @@ mod tests {
         let magnitudes = vec![0.5; 1024];
         let bands = map_to_bands(&magnitudes, 44100.0, 64);
         for band in &bands {
-            assert!(*band >= 0.0 && *band <= 1.0, "Band value out of range: {}", band);
+            assert!(
+                *band >= 0.0 && *band <= 1.0,
+                "Band value out of range: {}",
+                band
+            );
         }
     }
 

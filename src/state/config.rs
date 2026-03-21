@@ -66,11 +66,7 @@ impl Config {
                             config = file_config;
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "Failed to parse config {}: {}",
-                                path.display(),
-                                e
-                            );
+                            tracing::warn!("Failed to parse config {}: {}", path.display(), e);
                         }
                     },
                     Err(e) => {

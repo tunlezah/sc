@@ -69,9 +69,7 @@ impl StereoBiquad {
 #[allow(dead_code)]
 fn process_sample(coeffs: &BiquadCoefficients, state: &mut BiquadState, input: f32) -> f32 {
     let x = input as f64;
-    let y = coeffs.b0 * x
-        + coeffs.b1 * state.x1 as f64
-        + coeffs.b2 * state.x2 as f64
+    let y = coeffs.b0 * x + coeffs.b1 * state.x1 as f64 + coeffs.b2 * state.x2 as f64
         - coeffs.a1 * state.y1 as f64
         - coeffs.a2 * state.y2 as f64;
 
@@ -169,9 +167,16 @@ mod tests {
         // At 0dB gain, A=1.0, so b0 = 1 + alpha and a0 = 1 + alpha → b0/a0 = 1.0
         // Similarly b2 = 1 - alpha = a2, so b2/a0 = a2/a0
         let coeffs = peaking_eq(1000.0, 0.0, 1.414, SAMPLE_RATE);
-        assert!((coeffs.b0 - 1.0).abs() < 1e-10, "b0 should be ~1.0: {}", coeffs.b0);
+        assert!(
+            (coeffs.b0 - 1.0).abs() < 1e-10,
+            "b0 should be ~1.0: {}",
+            coeffs.b0
+        );
         // b2 and a2 should be equal (both = (1 - alpha) / a0)
-        assert!((coeffs.a2 - coeffs.b2).abs() < 1e-10, "a2 and b2 should match");
+        assert!(
+            (coeffs.a2 - coeffs.b2).abs() < 1e-10,
+            "a2 and b2 should match"
+        );
     }
 
     #[test]

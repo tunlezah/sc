@@ -8,8 +8,8 @@ pub fn capabilities() -> Vec<u8> {
     vec![
         0x4F, 0x00, // Vendor ID: Qualcomm (little-endian)
         0x01, 0x00, // Codec ID: aptX (little-endian)
-        0x30,       // Sampling freqs: 44100 (0x20) | 48000 (0x10)
-        0x02,       // Channel mode: Stereo
+        0x30, // Sampling freqs: 44100 (0x20) | 48000 (0x10)
+        0x02, // Channel mode: Stereo
     ]
 }
 
@@ -25,10 +25,7 @@ pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     };
 
     vec![
-        remote[0], remote[1],
-        remote[2], remote[3],
-        freq,
-        0x02, // Stereo
+        remote[0], remote[1], remote[2], remote[3], freq, 0x02, // Stereo
     ]
 }
 

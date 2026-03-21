@@ -9,10 +9,7 @@ use crate::state::{AppStateHandle, SystemEvent};
 use crate::web::routes::AppRouter;
 
 /// WebSocket handler for the `/ws/status` endpoint.
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(app): State<AppRouter>,
-) -> impl IntoResponse {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(app): State<AppRouter>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, app.state))
 }
 
@@ -28,7 +25,7 @@ async fn handle_socket(socket: WebSocket, state: AppStateHandle) {
         let snapshot = app.snapshot();
         let msg = WsOutMessage::StateSnapshot { data: snapshot };
         if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = sender.send(Message::Text(json.into())).await;
+            let _ = sender.send(Message::Text(json)).await;
         }
     }
 
@@ -43,7 +40,7 @@ async fn handle_socket(socket: WebSocket, state: AppStateHandle) {
                 Ok(event) => {
                     if let Some(msg) = event_to_ws_message(&event) {
                         if let Ok(json) = serde_json::to_string(&msg) {
-                            if sender.send(Message::Text(json.into())).await.is_err() {
+                            if sender.send(Message::Text(json)).await.is_err() {
                                 break;
                             }
                         }
@@ -142,15 +139,17 @@ fn event_to_ws_message(event: &SystemEvent) -> Option<WsOutMessage> {
                 },
             })
         }
-        SystemEvent::DeviceDiscovered { address, name, rssi: _ } => {
-            Some(WsOutMessage::DeviceStateChanged {
-                data: DeviceStateData {
-                    address: address.clone(),
-                    name: name.clone(),
-                    state: crate::bluetooth::device::DeviceState::Discovered,
-                },
-            })
-        }
+        SystemEvent::DeviceDiscovered {
+            address,
+            name,
+            rssi: _,
+        } => Some(WsOutMessage::DeviceStateChanged {
+            data: DeviceStateData {
+                address: address.clone(),
+                name: name.clone(),
+                state: crate::bluetooth::device::DeviceState::Discovered,
+            },
+        }),
         _ => None,
     }
 }
@@ -229,11 +228,24 @@ struct IceCandidateData {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 enum WsInMessage {
-    WebrtcOffer { #[allow(dead_code)] data: WsOfferData },
-    WebrtcIceCandidate { #[allow(dead_code)] data: WsIceCandidateData },
-    WebrtcStart { #[allow(dead_code)] data: serde_json::Value },
-    WebrtcStop { #[allow(dead_code)] data: serde_json::Value },
+    WebrtcOffer {
+        #[allow(dead_code)]
+        data: WsOfferData,
+    },
+    WebrtcIceCandidate {
+        #[allow(dead_code)]
+        data: WsIceCandidateData,
+    },
+    WebrtcStart {
+        #[allow(dead_code)]
+        data: serde_json::Value,
+    },
+    WebrtcStop {
+        #[allow(dead_code)]
+        data: serde_json::Value,
+    },
 }
 
 #[derive(Deserialize)]

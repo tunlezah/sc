@@ -121,7 +121,11 @@ mod tests {
     #[test]
     fn test_capabilities_not_empty() {
         for codec in AudioCodec::all() {
-            assert!(!codec.capabilities().is_empty(), "{} capabilities empty", codec);
+            assert!(
+                !codec.capabilities().is_empty(),
+                "{} capabilities empty",
+                codec
+            );
         }
     }
 
@@ -134,7 +138,10 @@ mod tests {
 
     #[test]
     fn test_endpoint_paths_unique() {
-        let paths: Vec<_> = AudioCodec::all().iter().map(|c| c.endpoint_path()).collect();
+        let paths: Vec<_> = AudioCodec::all()
+            .iter()
+            .map(|c| c.endpoint_path())
+            .collect();
         let unique: std::collections::HashSet<_> = paths.iter().collect();
         assert_eq!(paths.len(), unique.len());
     }

@@ -1,4 +1,3 @@
-import { useState, useRef, useCallback } from 'preact/hooks';
 import { useAppState } from './hooks/useAppState';
 import { useDarkMode } from './hooks/useDarkMode';
 import { Header } from './components/Header/Header';
