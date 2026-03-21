@@ -48,6 +48,7 @@ export interface AppState {
   playback_status: PlaybackStatus;
   line_in_active: boolean;
   line_in_available: boolean;
+  device_name: string;
 }
 
 export type WsMessage =

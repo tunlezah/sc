@@ -7,6 +7,7 @@ import { SpectrumVisualizer } from './components/SpectrumVisualizer/SpectrumVisu
 import { MediaControls } from './components/MediaControls/MediaControls';
 import { AudioPlayer } from './components/AudioPlayer/AudioPlayer';
 import { LineIn } from './components/LineIn/LineIn';
+import { Settings } from './components/Settings/Settings';
 
 export function App() {
   const { state, spectrum, ws } = useAppState();
@@ -37,6 +38,8 @@ export function App() {
       />
 
       <LineIn active={state.line_in_active} available={state.line_in_available} />
+
+      <Settings deviceName={state.device_name} />
     </div>
   );
 }
