@@ -1,0 +1,6 @@
+/target/
+/webui/node_modules/
+/webui/dist/
+*.swp
+*.swo
+.DS_Store
