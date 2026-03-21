@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::audio::line_in::LineInManager;
+use crate::audio::webrtc_audio::WebRtcCommand;
 use crate::bluetooth::avrcp::AvrcpCommand;
 use crate::bluetooth::manager::BluetoothCommand;
 use crate::dsp::presets;
@@ -20,6 +21,7 @@ pub struct AppRouter {
     pub bt_cmd_tx: mpsc::Sender<BluetoothCommand>,
     pub avrcp_cmd_tx: mpsc::Sender<AvrcpCommand>,
     pub line_in: Arc<LineInManager>,
+    pub webrtc_cmd_tx: Option<mpsc::Sender<WebRtcCommand>>,
 }
 
 #[derive(Serialize)]
@@ -108,7 +110,10 @@ pub fn create_router(app: AppRouter) -> Router {
 async fn get_status(State(app): State<AppRouter>) -> Json<StatusResponse> {
     let state = app.state.state.read().await;
     Json(StatusResponse {
-        status: format!("{:?}", state.bluetooth_status),
+        status: serde_json::to_value(&state.bluetooth_status)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "unavailable".to_string()),
         device_count: state.devices.len(),
         uptime_secs: state.started_at.elapsed().as_secs(),
     })

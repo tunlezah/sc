@@ -1,28 +1,38 @@
-import { useState, useRef, useEffect } from 'preact/hooks';
+import { useState, useRef, useEffect, useCallback } from 'preact/hooks';
 import { WebRTCClient } from '../../api/webrtc';
-import type { WebSocketClient } from '../../api/websocket';
-import type { MutableRef } from 'preact/hooks';
+import type { WsMessage } from '../../types';
 
 interface AudioPlayerProps {
-  ws: MutableRef<WebSocketClient | null>;
+  ws: { current: { send: (msg: unknown) => void; onMessage: (handler: (msg: WsMessage) => void) => () => void } | null };
 }
 
 export function AudioPlayer({ ws }: AudioPlayerProps) {
   const [listening, setListening] = useState(false);
   const rtcRef = useRef<WebRTCClient | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
+
+  // Cleanup function to stop WebRTC and unsubscribe from WS messages
+  const cleanup = useCallback(() => {
+    rtcRef.current?.stop();
+    rtcRef.current = null;
+    // Remove the WebSocket message handler to prevent leak
+    if (unsubRef.current) {
+      unsubRef.current();
+      unsubRef.current = null;
+    }
+    setListening(false);
+  }, []);
 
   const handleToggle = async () => {
     if (listening) {
-      rtcRef.current?.stop();
-      rtcRef.current = null;
-      setListening(false);
+      cleanup();
     } else {
       if (ws.current) {
         const client = new WebRTCClient(ws.current, setListening);
         rtcRef.current = client;
 
-        // Listen for answers and ICE candidates
-        ws.current.onMessage((msg) => {
+        // Subscribe to WebRTC signaling messages and store the unsubscribe fn
+        unsubRef.current = ws.current.onMessage((msg: WsMessage) => {
           if (msg.type === 'webrtc_answer') {
             client.handleAnswer(msg.data.sdp);
           } else if (msg.type === 'webrtc_ice_candidate') {
@@ -34,17 +44,16 @@ export function AudioPlayer({ ws }: AudioPlayerProps) {
           await client.start();
           setListening(true);
         } catch {
-          setListening(false);
+          cleanup();
         }
       }
     }
   };
 
+  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      rtcRef.current?.stop();
-    };
-  }, []);
+    return () => cleanup();
+  }, [cleanup]);
 
   return (
     <div class="card">

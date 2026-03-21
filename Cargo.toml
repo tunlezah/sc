@@ -1,8 +1,8 @@
 [package]
 name = "soundsync"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
-description = "Bluetooth A2DP Sink with DSP EQ and Web UI"
+description = "Bluetooth A2DP Sink with DSP EQ, WebRTC streaming, and Web UI"
 license = "MIT"
 
 [[bin]]
@@ -17,13 +17,15 @@ zvariant = "4"
 
 # Audio
 # pipewire = "0.8" # Used via subprocess, not linked directly
+opus = "0.3"
 
 # DSP
 rustfft = "6.2"
 
 # WebRTC
 webrtc = "0.12"
-opus = "0.3"
+rtp = "0.12"
+bytes = "1"
 
 # Web
 axum = { version = "0.7", features = ["ws", "macros"] }
@@ -36,14 +38,11 @@ toml = "0.8"
 # Utilities
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
-thiserror = "2"
 libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"
-axum-test = "16"

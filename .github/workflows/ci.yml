@@ -24,7 +24,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev pkg-config
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Clippy
@@ -73,7 +73,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev pkg-config
       - name: Download frontend build
         uses: actions/download-artifact@v4
         with:

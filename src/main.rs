@@ -9,11 +9,12 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::audio::line_in::LineInManager;
 use crate::audio::pipeline::AudioPipeline;
 use crate::audio::spectrum::SpectrumAnalyzer;
+use crate::audio::webrtc_audio::{WebRtcCommand, WebRtcManager};
 use crate::bluetooth::avrcp::{AvrcpCommand, AvrcpMonitor};
 use crate::bluetooth::manager::{BluetoothCommand, BluetoothManager};
 use crate::state::config::Config;
@@ -47,6 +48,7 @@ async fn main() {
     // Create command channels
     let (bt_cmd_tx, bt_cmd_rx) = mpsc::channel::<BluetoothCommand>(32);
     let (avrcp_cmd_tx, avrcp_cmd_rx) = mpsc::channel::<AvrcpCommand>(32);
+    let (webrtc_cmd_tx, webrtc_cmd_rx) = mpsc::channel::<WebRtcCommand>(32);
 
     // Initialize line-in manager
     let line_in = Arc::new(LineInManager::new(state.clone()));
@@ -71,11 +73,43 @@ async fn main() {
         spectrum.run(audio_rx).await;
     });
 
+    // Start WebRTC manager with audio capture subscription
+    let audio_sender = pipeline.audio_sender();
+    let webrtc_state = state.clone();
+    tokio::spawn(async move {
+        match WebRtcManager::new(audio_sender, webrtc_state) {
+            Ok(manager) => {
+                manager.run(webrtc_cmd_rx).await;
+            }
+            Err(e) => {
+                error!("Failed to initialize WebRTC manager: {}", e);
+            }
+        }
+    });
+
     // Start Bluetooth manager
     let bt_state = state.clone();
     let bt_manager = BluetoothManager::new(bt_state, bt_cmd_rx);
     tokio::spawn(async move {
         bt_manager.run().await;
+    });
+
+    // Register A2DP endpoints for codec negotiation
+    let endpoint_state = state.clone();
+    tokio::spawn(async move {
+        match zbus::Connection::system().await {
+            Ok(connection) => {
+                if let Err(e) =
+                    bluetooth::endpoint::register_endpoints(&connection, endpoint_state).await
+                {
+                    warn!("Failed to register A2DP endpoints: {}", e);
+                    info!("A2DP codec negotiation will not be available");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to connect to D-Bus for A2DP endpoints: {}", e);
+            }
+        }
     });
 
     // Start AVRCP monitor
@@ -90,6 +124,7 @@ async fn main() {
         bt_cmd_tx,
         avrcp_cmd_tx,
         line_in,
+        webrtc_cmd_tx: Some(webrtc_cmd_tx),
     };
 
     let cors = CorsLayer::new()

@@ -1,63 +1,148 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
-use tracing::info;
+
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
+use tracing::{debug, error, info};
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS};
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::TrackLocalWriter;
 
-/// Manages WebRTC sessions for browser audio streaming.
-#[allow(dead_code)]
-pub struct WebRtcManager {
-    sessions: Arc<RwLock<HashMap<String, WebRtcSession>>>,
-    audio_rx: broadcast::Sender<Vec<f32>>,
-}
+use crate::audio::opus_encoder::OpusEncoder;
+use crate::state::{AppStateHandle, SystemEvent};
 
-#[allow(dead_code)]
-struct WebRtcSession {
-    peer_connection: Arc<RTCPeerConnection>,
-}
-
-#[allow(dead_code)]
-impl WebRtcManager {
-    pub fn new(audio_tx: broadcast::Sender<Vec<f32>>) -> Self {
-        Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            audio_rx: audio_tx,
-        }
-    }
-
-    /// Handle a WebRTC offer from a browser client.
-    /// Returns an SDP answer string.
-    pub async fn handle_offer(
-        &self,
+/// Commands sent from the WebSocket handler to the WebRTC manager task.
+#[derive(Debug)]
+pub enum WebRtcCommand {
+    /// Browser sent an SDP offer to start streaming.
+    Offer {
         session_id: String,
-        offer_sdp: String,
-    ) -> Result<String, String> {
-        // Create media engine with Opus codec
+        sdp: String,
+    },
+    /// Browser sent an ICE candidate.
+    IceCandidate {
+        session_id: String,
+        candidate: String,
+        sdp_mid: Option<String>,
+        sdp_mline_index: Option<u16>,
+    },
+    /// Browser requested session teardown.
+    Stop {
+        session_id: String,
+    },
+}
+
+/// Manages WebRTC sessions for audio streaming to browsers.
+///
+/// Uses the pure-Rust `webrtc` crate. Each session gets its own peer connection
+/// and an audio pump task that reads PCM from the AudioCapture broadcast channel,
+/// encodes to Opus, and writes RTP packets to the track.
+pub struct WebRtcManager {
+    api: webrtc::api::API,
+    sessions: HashMap<String, WebRtcSession>,
+    audio_sender: broadcast::Sender<Vec<f32>>,
+    state: AppStateHandle,
+}
+
+/// A single WebRTC session with a browser client.
+struct WebRtcSession {
+    peer_connection: Arc<webrtc::peer_connection::RTCPeerConnection>,
+    #[allow(dead_code)]
+    audio_track: Arc<TrackLocalStaticRTP>,
+    pump_task: Option<JoinHandle<()>>,
+}
+
+impl WebRtcManager {
+    /// Create a new WebRTC manager.
+    ///
+    /// `audio_sender` is the broadcast channel from AudioCapture that provides
+    /// PCM audio frames (1920 interleaved f32 samples per 20ms frame).
+    pub fn new(
+        audio_sender: broadcast::Sender<Vec<f32>>,
+        state: AppStateHandle,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut media_engine = MediaEngine::default();
-        media_engine
-            .register_default_codecs()
-            .map_err(|e| format!("Failed to register codecs: {}", e))?;
+        media_engine.register_default_codecs()?;
 
         let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut media_engine)
-            .map_err(|e| format!("Failed to register interceptors: {}", e))?;
+        registry = register_default_interceptors(registry, &mut media_engine)?;
 
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
             .build();
 
+        Ok(Self {
+            api,
+            sessions: HashMap::new(),
+            audio_sender,
+            state,
+        })
+    }
+
+    /// Run the WebRTC manager, processing commands from the channel.
+    pub async fn run(mut self, mut cmd_rx: mpsc::Receiver<WebRtcCommand>) {
+        info!("WebRTC manager started");
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                WebRtcCommand::Offer { session_id, sdp } => {
+                    info!("WebRTC offer for session {} ({} bytes)", session_id, sdp.len());
+                    match self.handle_offer(session_id.clone(), &sdp).await {
+                        Ok(answer_sdp) => {
+                            self.state.publish(SystemEvent::WebRtcAnswer {
+                                session_id: session_id.clone(),
+                                sdp: answer_sdp,
+                            });
+                        }
+                        Err(e) => {
+                            error!("WebRTC offer failed for {}: {}", session_id, e);
+                        }
+                    }
+                }
+                WebRtcCommand::IceCandidate {
+                    session_id,
+                    candidate,
+                    sdp_mid,
+                    sdp_mline_index,
+                } => {
+                    debug!("ICE candidate for session {}", session_id);
+                    if let Err(e) = self
+                        .handle_ice_candidate(
+                            &session_id,
+                            &candidate,
+                            sdp_mid.as_deref(),
+                            sdp_mline_index,
+                        )
+                        .await
+                    {
+                        error!("ICE candidate failed for {}: {}", session_id, e);
+                    }
+                }
+                WebRtcCommand::Stop { session_id } => {
+                    info!("Removing WebRTC session: {}", session_id);
+                    self.remove_session(&session_id).await;
+                }
+            }
+        }
+        info!("WebRTC manager shutting down");
+    }
+
+    /// Handle an SDP offer: create peer connection, audio track, and start the
+    /// Opus encoding pump that streams audio to the browser.
+    async fn handle_offer(
+        &mut self,
+        session_id: String,
+        sdp: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let config = RTCConfiguration {
             ice_servers: vec![RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
@@ -66,106 +151,156 @@ impl WebRtcManager {
             ..Default::default()
         };
 
-        let peer_connection = Arc::new(
-            api.new_peer_connection(config)
-                .await
-                .map_err(|e| format!("Failed to create PeerConnection: {}", e))?,
-        );
+        let peer_connection = Arc::new(self.api.new_peer_connection(config).await?);
 
-        // Create audio track
+        // Create an audio track for Opus at 48kHz stereo
         let audio_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_OPUS.to_string(),
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
                 clock_rate: 48000,
                 channels: 2,
                 ..Default::default()
             },
-            "audio".to_string(),
-            "soundsync".to_string(),
+            format!("audio-{}", session_id),
+            format!("soundsync-{}", session_id),
         ));
 
-        // Add track to peer connection
         peer_connection
             .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|e| format!("Failed to add track: {}", e))?;
+            .await?;
 
-        // Set remote description (the offer)
-        let offer = RTCSessionDescription::offer(offer_sdp)
-            .map_err(|e| format!("Invalid offer SDP: {}", e))?;
-        peer_connection
-            .set_remote_description(offer)
-            .await
-            .map_err(|e| format!("Failed to set remote description: {}", e))?;
+        // Set up ICE candidate callback to forward candidates to the browser
+        let state_handle = self.state.clone();
+        let ice_session_id = session_id.clone();
+        peer_connection.on_ice_candidate(Box::new(move |candidate| {
+            let state_handle = state_handle.clone();
+            let session_id = ice_session_id.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    if let Ok(json) = candidate.to_json() {
+                        state_handle.publish(SystemEvent::WebRtcIceCandidate {
+                            session_id,
+                            candidate: json.candidate,
+                            sdp_mid: json.sdp_mid,
+                            sdp_mline_index: json.sdp_mline_index,
+                        });
+                    }
+                }
+            })
+        }));
 
-        // Create answer
-        let answer = peer_connection
-            .create_answer(None)
-            .await
-            .map_err(|e| format!("Failed to create answer: {}", e))?;
+        // Process the SDP offer
+        let offer = RTCSessionDescription::offer(sdp.to_string())?;
+        peer_connection.set_remote_description(offer).await?;
 
-        // Set local description
+        let answer = peer_connection.create_answer(None).await?;
         peer_connection
             .set_local_description(answer.clone())
-            .await
-            .map_err(|e| format!("Failed to set local description: {}", e))?;
+            .await?;
 
-        // Store session
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(
-                session_id.clone(),
-                WebRtcSession {
-                    peer_connection: Arc::clone(&peer_connection),
-                },
-            );
-        }
+        // Start the audio pump task: subscribe to PCM, encode Opus, write RTP
+        let track = Arc::clone(&audio_track);
+        let mut audio_rx = self.audio_sender.subscribe();
 
-        info!("WebRTC session created: {}", session_id);
+        let pump_task = tokio::spawn(async move {
+            let mut encoder = match OpusEncoder::new() {
+                Ok(enc) => enc,
+                Err(e) => {
+                    error!("Failed to create Opus encoder: {}", e);
+                    return;
+                }
+            };
+
+            let mut timestamp: u32 = 0;
+            let mut sequence_number: u16 = 0;
+
+            loop {
+                match audio_rx.recv().await {
+                    Ok(pcm_samples) => {
+                        // Encode 20 ms of interleaved f32 PCM to Opus
+                        let opus_data = match encoder.encode_frame(&pcm_samples) {
+                            Some(data) => data,
+                            None => continue,
+                        };
+
+                        // Build RTP packet. The webrtc crate's interceptor chain
+                        // handles SSRC and negotiated payload type, but we must
+                        // provide sequence numbers and timestamps.
+                        let packet = rtp::packet::Packet {
+                            header: rtp::header::Header {
+                                version: 2,
+                                payload_type: 111, // dynamic PT for Opus
+                                sequence_number,
+                                timestamp,
+                                ..Default::default()
+                            },
+                            payload: bytes::Bytes::from(opus_data),
+                        };
+
+                        if track.write_rtp(&packet).await.is_err() {
+                            break;
+                        }
+
+                        // Opus at 48 kHz, 20 ms frames = 960 samples per frame
+                        timestamp = timestamp.wrapping_add(960);
+                        sequence_number = sequence_number.wrapping_add(1);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("WebRTC audio lagged by {} frames, skipping", n);
+                    }
+                }
+            }
+        });
+
+        self.sessions.insert(
+            session_id,
+            WebRtcSession {
+                peer_connection,
+                audio_track,
+                pump_task: Some(pump_task),
+            },
+        );
 
         Ok(answer.sdp)
     }
 
     /// Handle an ICE candidate from a browser client.
-    pub async fn handle_ice_candidate(
+    async fn handle_ice_candidate(
         &self,
         session_id: &str,
         candidate: &str,
         sdp_mid: Option<&str>,
         sdp_mline_index: Option<u16>,
-    ) -> Result<(), String> {
-        let sessions = self.sessions.read().await;
-        let session = sessions
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let session = self
+            .sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
 
-        let candidate_init = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+        let ice_candidate = RTCIceCandidateInit {
             candidate: candidate.to_string(),
             sdp_mid: sdp_mid.map(|s| s.to_string()),
             sdp_mline_index,
-            username_fragment: None,
+            ..Default::default()
         };
 
         session
             .peer_connection
-            .add_ice_candidate(candidate_init)
-            .await
-            .map_err(|e| format!("Failed to add ICE candidate: {}", e))?;
+            .add_ice_candidate(ice_candidate)
+            .await?;
 
         Ok(())
     }
 
-    /// Remove a WebRTC session.
-    pub async fn remove_session(&self, session_id: &str) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.remove(session_id) {
+    /// Remove a session and clean up resources.
+    async fn remove_session(&mut self, session_id: &str) {
+        if let Some(mut session) = self.sessions.remove(session_id) {
+            if let Some(task) = session.pump_task.take() {
+                task.abort();
+            }
             let _ = session.peer_connection.close().await;
-            info!("WebRTC session removed: {}", session_id);
+            info!("WebRTC session {} cleaned up", session_id);
         }
-    }
-
-    /// Get the number of active sessions.
-    pub async fn session_count(&self) -> usize {
-        self.sessions.read().await.len()
     }
 }

@@ -50,6 +50,16 @@ pub enum SystemEvent {
     },
     LineInActivated,
     LineInDeactivated,
+    WebRtcAnswer {
+        session_id: String,
+        sdp: String,
+    },
+    WebRtcIceCandidate {
+        session_id: String,
+        candidate: String,
+        sdp_mid: Option<String>,
+        sdp_mline_index: Option<u16>,
+    },
     Error {
         message: String,
     },
@@ -174,6 +184,12 @@ impl AppState {
 pub struct AppStateHandle {
     pub state: Arc<RwLock<AppState>>,
     pub events: broadcast::Sender<SystemEvent>,
+}
+
+impl std::fmt::Debug for AppStateHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppStateHandle").finish()
+    }
 }
 
 impl AppStateHandle {

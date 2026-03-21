@@ -1,17 +1,21 @@
 # SoundSync
 
-Bluetooth A2DP audio receiver with 10-band parametric EQ and a real-time web UI. Stream audio from any Bluetooth device to a Linux machine or Raspberry Pi, shape the sound with a built-in equalizer, and monitor everything from your browser.
+Bluetooth A2DP audio receiver with 10-band parametric EQ, WebRTC browser streaming, and a real-time web UI. Stream audio from any Bluetooth device to a Linux machine or Raspberry Pi, shape the sound with a built-in equalizer, listen in your browser via WebRTC, and monitor everything from a responsive web interface.
 
 ## Features
 
-- **Bluetooth A2DP Sink** — receive audio from phones, tablets, and other devices over Bluetooth (SBC, AAC, LDAC, aptX, aptX HD)
-- **10-Band Parametric EQ** — low-shelf, peaking, and high-shelf filters from 60 Hz to 16 kHz with ±12 dB gain and built-in presets (Flat, Bass Boost, Vocal, Classical, Rock, Electronic, Podcast)
-- **Real-Time Spectrum Visualizer** — FFT-based frequency analysis displayed in the browser
-- **Media Controls** — play, pause, next, previous via AVRCP
-- **Line-In Support** — analog audio input source
-- **WebRTC Audio Streaming** — listen to the audio stream directly in your browser
+- **Bluetooth A2DP Sink** — receive audio from phones, tablets, and other devices over Bluetooth
+- **A2DP Codec Negotiation** — registers D-Bus MediaEndpoint1 for automatic codec selection (SBC, AAC, LDAC, aptX, aptX HD) with BlueZ
+- **10-Band Parametric EQ** — low-shelf, peaking, and high-shelf filters from 60 Hz to 16 kHz with +/-12 dB gain, processed via PipeWire filter-chain
+- **EQ Presets** — 7 built-in presets (Flat, Bass Boost, Vocal, Classical, Rock, Electronic, Podcast) plus custom preset save/load/delete
+- **Real-Time Spectrum Visualizer** — 2048-point FFT with 64 logarithmic frequency bands at 48 kHz
+- **WebRTC Audio Streaming** — listen to the audio stream directly in your browser with Opus encoding at 128 kbps, full SDP offer/answer and ICE candidate signaling
+- **Media Controls** — play, pause, next, previous via AVRCP with track metadata display
+- **Line-In Support** — analog audio input source detection and activation
 - **REST API & WebSocket** — full programmatic control with real-time event streaming
 - **Web UI** — responsive Preact/TypeScript interface with dark mode
+- **Auto-Pairing** — D-Bus Agent1 that accepts pairing requests automatically
+- **Production Ready** — systemd service, install script, CI/CD pipeline
 
 ## Requirements
 
@@ -24,7 +28,7 @@ System packages:
 
 ```
 bluetooth bluez pipewire pipewire-pulse wireplumber
-libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev pkg-config build-essential
+libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev pkg-config build-essential
 ```
 
 ## Quick Start
@@ -57,6 +61,18 @@ cd ..
 ```
 
 The web UI is served at `http://localhost:8080` by default.
+
+## Architecture
+
+SoundSync runs as a single process with several concurrent subsystems:
+
+1. **BluetoothManager** — manages adapter, device discovery, connections via BlueZ
+2. **A2dpEndpoint** — registers `org.bluez.MediaEndpoint1` on D-Bus for each codec, enabling BlueZ to negotiate audio codec parameters with connecting devices
+3. **AudioPipeline** — creates a PipeWire null sink, filter-chain (EQ), and audio capture
+4. **WebRtcManager** — accepts browser WebRTC offers, encodes captured PCM audio to Opus via RTP, and streams to browser clients
+5. **AvrcpMonitor** — polls BlueZ for playback status and track metadata via AVRCP
+6. **SpectrumAnalyzer** — consumes PCM audio and produces 64-band FFT spectrum data
+7. **Web Server** — Axum HTTP server with REST API, WebSocket events, and static file serving
 
 ## Configuration
 
@@ -110,21 +126,49 @@ max_devices = 1          # Max concurrent connections
 
 ### WebSocket
 
-Connect to `/ws/status` for real-time events (device changes, EQ updates, spectrum data, playback status).
+Connect to `/ws/status` for real-time events. On connect, receives a full state snapshot. Subsequent events include device state changes, EQ updates, spectrum data, playback status, and WebRTC signaling.
+
+**WebRTC Signaling** is handled over the same WebSocket connection:
+- Client sends `webrtc_offer` with SDP
+- Server responds with `webrtc_answer` and `webrtc_ice_candidate` events
+- Client sends `webrtc_ice_candidate` for trickle ICE
+- Client sends `webrtc_stop` to end the session
 
 ## Project Structure
 
 ```
 src/
-├── main.rs              # Entry point
-├── audio/               # PipeWire pipeline, capture, spectrum analysis, WebRTC
-├── bluetooth/           # BlueZ integration, discovery, pairing, AVRCP, codecs
-├── dsp/                 # Biquad filters, parametric EQ, presets
-├── state/               # App state, config loading, event bus
-└── web/                 # Axum routes, WebSocket handler
+├── main.rs              # Entry point, wires all subsystems
+├── audio/
+│   ├── pipeline.rs      # PipeWire null sink + filter-chain management
+│   ├── capture.rs       # PCM audio capture via pw-cat/parec
+│   ├── opus_encoder.rs  # Opus encoding for WebRTC (48kHz stereo 128kbps)
+│   ├── webrtc_audio.rs  # WebRTC session manager with RTP streaming
+│   ├── spectrum.rs      # FFT spectrum analyzer (64 bands)
+│   ├── filter_chain.rs  # PipeWire filter-chain config generation
+│   └── line_in.rs       # Line-in source detection
+├── bluetooth/
+│   ├── manager.rs       # BlueZ adapter, discovery, connections
+│   ├── endpoint.rs      # A2DP MediaEndpoint1 D-Bus implementation
+│   ├── agent.rs         # Pairing agent (auto-accept)
+│   ├── avrcp.rs         # AVRCP media controls and track info
+│   ├── discovery.rs     # Device discovery and state management
+│   ├── device.rs        # Device info and state machine
+│   ├── constants.rs     # UUIDs, paths, timing constants
+│   └── codecs/          # SBC, AAC, LDAC, aptX, aptX HD capability negotiation
+├── dsp/
+│   ├── equalizer.rs     # 10-band parametric EQ with PipeWire filter-chain
+│   ├── biquad.rs        # Biquad filter coefficient calculation
+│   └── presets.rs       # Built-in and custom EQ presets
+├── state/
+│   ├── mod.rs           # App state, event bus, snapshots
+│   └── config.rs        # Layered TOML configuration
+└── web/
+    ├── routes.rs        # REST API endpoints
+    └── ws.rs            # WebSocket handler with WebRTC signaling
 webui/
 ├── src/
-│   ├── components/      # EQ controls, device list, spectrum visualizer, etc.
+│   ├── components/      # EQ controls, device list, spectrum visualizer, audio player, etc.
 │   ├── hooks/           # App state, dark mode
 │   └── api/             # REST, WebSocket, WebRTC clients
 ├── package.json
@@ -143,6 +187,23 @@ GitHub Actions runs on every push and PR to `main`:
 3. **Release** — builds an optimized release binary with the frontend embedded, uploaded as a build artifact
 
 Download the latest release binary from the [Actions tab](../../actions) artifacts.
+
+## Changelog
+
+### v1.1.0
+
+- **A2DP Codec Negotiation** — added `MediaEndpoint1` D-Bus endpoint registration for all 5 codecs, enabling proper A2DP sink functionality with automatic codec selection
+- **Working WebRTC Audio** — full pipeline from PipeWire capture through Opus encoding to RTP streaming; browser clients can now listen to audio in real-time
+- **WebRTC Signaling** — complete SDP offer/answer and ICE candidate exchange over WebSocket with per-session routing
+- **Bug fixes:**
+  - Fixed spectrum analyzer sample rate (was 44100 Hz, now correctly 48000 Hz to match capture)
+  - Fixed Bluetooth status string format (REST API now returns serde-compatible snake_case values)
+  - Fixed AudioPlayer WebSocket handler leak (handlers now properly unsubscribed on stop)
+  - Removed unused `clap` and `thiserror` dependencies
+
+### v1.0.0
+
+- Initial release
 
 ## License
 

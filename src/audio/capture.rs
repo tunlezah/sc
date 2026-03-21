@@ -30,6 +30,11 @@ impl AudioCapture {
         self.sender.subscribe()
     }
 
+    /// Get a clone of the broadcast sender (for WebRTC manager).
+    pub fn sender(&self) -> broadcast::Sender<Vec<f32>> {
+        self.sender.clone()
+    }
+
     /// Start capturing audio from the monitor source.
     pub async fn start(&mut self, source_name: &str) -> Result<(), String> {
         self.stop().await;
