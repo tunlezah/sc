@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'preact/hooks';
 import { WebRTCClient } from '../../api/webrtc';
+import type { WebRTCTransport } from '../../api/webrtc';
 import type { WsMessage } from '../../types';
 
 interface AudioPlayerProps {
-  ws: { current: { send: (msg: unknown) => void; onMessage: (handler: (msg: WsMessage) => void) => () => void } | null };
+  ws: { current: WebRTCTransport | null };
 }
 
 export function AudioPlayer({ ws }: AudioPlayerProps) {
