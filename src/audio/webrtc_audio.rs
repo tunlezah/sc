@@ -24,10 +24,7 @@ use crate::state::{AppStateHandle, SystemEvent};
 #[derive(Debug)]
 pub enum WebRtcCommand {
     /// Browser sent an SDP offer to start streaming.
-    Offer {
-        session_id: String,
-        sdp: String,
-    },
+    Offer { session_id: String, sdp: String },
     /// Browser sent an ICE candidate.
     IceCandidate {
         session_id: String,
@@ -36,9 +33,7 @@ pub enum WebRtcCommand {
         sdp_mline_index: Option<u16>,
     },
     /// Browser requested session teardown.
-    Stop {
-        session_id: String,
-    },
+    Stop { session_id: String },
 }
 
 /// Manages WebRTC sessions for audio streaming to browsers.
@@ -95,7 +90,11 @@ impl WebRtcManager {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 WebRtcCommand::Offer { session_id, sdp } => {
-                    info!("WebRTC offer for session {} ({} bytes)", session_id, sdp.len());
+                    info!(
+                        "WebRTC offer for session {} ({} bytes)",
+                        session_id,
+                        sdp.len()
+                    );
                     match self.handle_offer(session_id.clone(), &sdp).await {
                         Ok(answer_sdp) => {
                             self.state.publish(SystemEvent::WebRtcAnswer {

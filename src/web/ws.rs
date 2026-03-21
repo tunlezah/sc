@@ -106,7 +106,11 @@ async fn handle_client_message(app: &AppRouter, session_id: &str, text: &str) {
 
     match msg {
         WsInMessage::WebrtcOffer { data } => {
-            info!("WebRTC offer from session {} ({} bytes)", session_id, data.sdp.len());
+            info!(
+                "WebRTC offer from session {} ({} bytes)",
+                session_id,
+                data.sdp.len()
+            );
             let _ = webrtc_tx
                 .send(WebRtcCommand::Offer {
                     session_id: session_id.to_string(),
