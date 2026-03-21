@@ -105,7 +105,7 @@ async fn handle_client_message(app: &AppRouter, session_id: &str, text: &str) {
     };
 
     match msg {
-        WsInMessage::WebrtcOffer { data } => {
+        WsInMessage::Offer { data } => {
             info!(
                 "WebRTC offer from session {} ({} bytes)",
                 session_id,
@@ -118,7 +118,7 @@ async fn handle_client_message(app: &AppRouter, session_id: &str, text: &str) {
                 })
                 .await;
         }
-        WsInMessage::WebrtcIceCandidate { data } => {
+        WsInMessage::IceCandidate { data } => {
             let _ = webrtc_tx
                 .send(WebRtcCommand::IceCandidate {
                     session_id: session_id.to_string(),
@@ -128,7 +128,7 @@ async fn handle_client_message(app: &AppRouter, session_id: &str, text: &str) {
                 })
                 .await;
         }
-        WsInMessage::WebrtcStop { .. } => {
+        WsInMessage::Stop { .. } => {
             info!("WebRTC stop from session {}", session_id);
             let _ = webrtc_tx
                 .send(WebRtcCommand::Stop {
@@ -294,11 +294,14 @@ struct IceCandidateData {
 // -- Incoming message types --
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type")]
 enum WsInMessage {
-    WebrtcOffer { data: WsOfferData },
-    WebrtcIceCandidate { data: WsIceCandidateData },
-    WebrtcStop {},
+    #[serde(rename = "webrtc_offer")]
+    Offer { data: WsOfferData },
+    #[serde(rename = "webrtc_ice_candidate")]
+    IceCandidate { data: WsIceCandidateData },
+    #[serde(rename = "webrtc_stop")]
+    Stop {},
 }
 
 #[derive(Deserialize)]

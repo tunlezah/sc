@@ -1,12 +1,15 @@
-import { WebSocketClient } from './websocket';
+export interface WebRTCTransport {
+  send(data: unknown): void;
+  onMessage(handler: (msg: import('../types').WsMessage) => void): () => void;
+}
 
 export class WebRTCClient {
   private pc: RTCPeerConnection | null = null;
-  private ws: WebSocketClient;
+  private ws: WebRTCTransport;
   private audioElement: HTMLAudioElement | null = null;
   private onStateChange: (playing: boolean) => void;
 
-  constructor(ws: WebSocketClient, onStateChange: (playing: boolean) => void) {
+  constructor(ws: WebRTCTransport, onStateChange: (playing: boolean) => void) {
     this.ws = ws;
     this.onStateChange = onStateChange;
   }
