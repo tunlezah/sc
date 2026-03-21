@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # Colors
 RED='\033[0;31m'
@@ -68,7 +68,7 @@ install_dependencies() {
         bluetooth bluez \
         pipewire pipewire-pulse wireplumber \
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
-        libclang-dev pkg-config build-essential \
+        libclang-dev libopus-dev pkg-config build-essential \
         git curl
 
     # Install Rust if not present

@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use crate::state::{AppStateHandle, SystemEvent};
 
 const FFT_SIZE: usize = 2048;
-const SAMPLE_RATE: f32 = 44100.0;
+const SAMPLE_RATE: f32 = 48000.0;
 const NUM_BANDS: usize = 64;
 const SMOOTHING_ALPHA: f32 = 0.35;
 const MIN_DB: f32 = -80.0;
@@ -151,14 +151,14 @@ mod tests {
     #[test]
     fn test_map_to_bands_count() {
         let magnitudes = vec![0.01; 1024];
-        let bands = map_to_bands(&magnitudes, 44100.0, 64);
+        let bands = map_to_bands(&magnitudes, 48000.0, 64);
         assert_eq!(bands.len(), 64);
     }
 
     #[test]
     fn test_map_to_bands_range() {
         let magnitudes = vec![0.5; 1024];
-        let bands = map_to_bands(&magnitudes, 44100.0, 64);
+        let bands = map_to_bands(&magnitudes, 48000.0, 64);
         for band in &bands {
             assert!(
                 *band >= 0.0 && *band <= 1.0,
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn test_map_to_bands_silence() {
         let magnitudes = vec![0.0; 1024];
-        let bands = map_to_bands(&magnitudes, 44100.0, 64);
+        let bands = map_to_bands(&magnitudes, 48000.0, 64);
         for band in &bands {
             assert_eq!(*band, 0.0);
         }
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_map_to_bands_full_scale() {
         let magnitudes = vec![1.0; 1024];
-        let bands = map_to_bands(&magnitudes, 44100.0, 64);
+        let bands = map_to_bands(&magnitudes, 48000.0, 64);
         for band in &bands {
             assert_eq!(*band, 1.0);
         }

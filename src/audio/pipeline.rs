@@ -104,6 +104,11 @@ impl AudioPipeline {
         self.capture.subscribe()
     }
 
+    /// Get the audio capture broadcast sender (for WebRTC manager to subscribe).
+    pub fn audio_sender(&self) -> tokio::sync::broadcast::Sender<Vec<f32>> {
+        self.capture.sender()
+    }
+
     /// Shut down the audio pipeline.
     pub async fn shutdown(&mut self) {
         self.capture.stop().await;

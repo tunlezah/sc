@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import type { AppState, WsMessage } from '../types';
 import { WebSocketClient } from '../api/websocket';
 
@@ -11,6 +11,7 @@ const defaultState: AppState = {
   playback_status: 'unknown',
   line_in_active: false,
   line_in_available: false,
+  device_name: 'SoundSync',
 };
 
 export function useAppState() {

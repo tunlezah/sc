@@ -4,4 +4,5 @@ pub mod codecs;
 pub mod constants;
 pub mod device;
 pub mod discovery;
+pub mod endpoint;
 pub mod manager;
