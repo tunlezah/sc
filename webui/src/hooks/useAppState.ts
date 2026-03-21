@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import type { AppState, WsMessage } from '../types';
 import { WebSocketClient } from '../api/websocket';
 

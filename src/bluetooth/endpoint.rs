@@ -153,10 +153,7 @@ pub async fn register_endpoints(
             zvariant::Value::from(crate::bluetooth::constants::A2DP_SINK_UUID),
         );
         props.insert("Codec", zvariant::Value::from(codec.codec_id()));
-        props.insert(
-            "Capabilities",
-            zvariant::Value::from(codec.capabilities()),
-        );
+        props.insert("Capabilities", zvariant::Value::from(codec.capabilities()));
 
         let path = ObjectPath::try_from(endpoint_path)?;
 
