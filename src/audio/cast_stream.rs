@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use futures::stream;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
@@ -18,7 +18,7 @@ use crate::audio::mp3_encoder::Mp3Encoder;
 pub async fn stream_audio_mp3(
     audio_sender: broadcast::Sender<Vec<f32>>,
 ) -> Result<Response, StatusCode> {
-    let mut audio_rx = audio_sender.subscribe();
+    let audio_rx = audio_sender.subscribe();
 
     let encoder = Mp3Encoder::new().map_err(|e| {
         warn!("Failed to create MP3 encoder for stream: {}", e);
