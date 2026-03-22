@@ -24,7 +24,7 @@ async fn handle_socket(socket: WebSocket, app: AppRouter) {
     {
         let state = app.state.state.read().await;
         let snapshot = state.snapshot();
-        let msg = WsOutMessage::StateSnapshot { data: snapshot };
+        let msg = WsOutMessage::StateSnapshot { data: Box::new(snapshot) };
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = sender.send(Message::Text(json)).await;
         }
@@ -279,7 +279,7 @@ fn event_to_ws_message(event: &SystemEvent, ws_session_id: &str) -> Option<WsOut
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsOutMessage {
     StateSnapshot {
-        data: crate::state::AppStateSnapshot,
+        data: Box<crate::state::AppStateSnapshot>,
     },
     DeviceStateChanged {
         data: DeviceStateData,
