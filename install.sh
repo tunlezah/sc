@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="1.1.0"
+VERSION="2.0.0"
 
 # Colors
 RED='\033[0;31m'
@@ -67,8 +67,10 @@ install_dependencies() {
     apt-get install -y -qq \
         bluetooth bluez \
         pipewire pipewire-pulse wireplumber \
+        pipewire-module-raop \
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
-        libclang-dev libopus-dev pkg-config build-essential \
+        libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential \
+        avahi-daemon avahi-utils \
         git curl
 
     # Install Rust if not present
@@ -118,6 +120,32 @@ BTCONF
 
     log "Bluetooth configured. Restarting service..."
     systemctl restart bluetooth || warn "Failed to restart bluetooth service"
+}
+
+# -------------------------------------------------------------------
+# 3b. Configure Avahi (mDNS for Chromecast/AirPlay discovery)
+# -------------------------------------------------------------------
+configure_avahi() {
+    log "Configuring Avahi (mDNS) for device discovery..."
+
+    # Ensure avahi-daemon is enabled and running
+    systemctl enable avahi-daemon 2>/dev/null || warn "Could not enable avahi-daemon"
+    systemctl start avahi-daemon 2>/dev/null || warn "Could not start avahi-daemon"
+
+    # Verify avahi is running
+    if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
+        log "Avahi daemon is running"
+    else
+        warn "Avahi daemon is not running. Chromecast/AirPlay discovery may not work."
+    fi
+
+    # Check for PipeWire RAOP module
+    if find /usr/lib -name "libpipewire-module-raop-sink*" -type f 2>/dev/null | grep -q .; then
+        log "PipeWire RAOP module found (AirPlay support available)"
+    else
+        warn "PipeWire RAOP module not found. AirPlay output may be unavailable."
+        warn "Try: apt install pipewire-module-raop (package name varies by distro)"
+    fi
 }
 
 # -------------------------------------------------------------------
@@ -186,7 +214,7 @@ create_service() {
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=SoundSync Bluetooth Audio Receiver
-After=bluetooth.service pipewire.service
+After=bluetooth.service pipewire.service avahi-daemon.service
 
 [Service]
 Type=simple
@@ -233,6 +261,7 @@ main() {
     detect_system
     install_dependencies
     configure_bluetooth
+    configure_avahi
     build_soundsync
     create_service
     setup_xdg

@@ -1,4 +1,4 @@
-import type { DeviceInfo, EqBand } from '../types';
+import type { DeviceInfo, EqBand, CastDevice, AirPlayDevice } from '../types';
 
 const BASE = '';
 
@@ -43,3 +43,17 @@ export const avrcpPlay = () => request<{ ok: boolean }>('POST', '/api/avrcp/play
 export const avrcpPause = () => request<{ ok: boolean }>('POST', '/api/avrcp/pause');
 export const avrcpNext = () => request<{ ok: boolean }>('POST', '/api/avrcp/next');
 export const avrcpPrevious = () => request<{ ok: boolean }>('POST', '/api/avrcp/previous');
+
+// Chromecast
+export const getCastDevices = () => request<CastDevice[]>('GET', '/api/cast/devices');
+export const castDiscover = () => request<{ ok: boolean }>('POST', '/api/cast/discover');
+export const castConnect = (deviceId: string) => request<{ ok: boolean }>('POST', '/api/cast/connect', { device_id: deviceId });
+export const castDisconnect = () => request<{ ok: boolean }>('POST', '/api/cast/disconnect');
+export const castVolume = (level: number) => request<{ ok: boolean }>('POST', '/api/cast/volume', { level });
+
+// AirPlay
+export const getAirplayDevices = () => request<AirPlayDevice[]>('GET', '/api/airplay/devices');
+export const airplayDiscover = () => request<{ ok: boolean }>('POST', '/api/airplay/discover');
+export const airplayConnect = (name: string) => request<{ ok: boolean }>('POST', '/api/airplay/connect', { name });
+export const airplayDisconnect = () => request<{ ok: boolean }>('POST', '/api/airplay/disconnect');
+export const airplayVolume = (level: number) => request<{ ok: boolean }>('POST', '/api/airplay/volume', { level });

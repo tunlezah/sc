@@ -219,6 +219,64 @@ fn event_to_ws_message(event: &SystemEvent, ws_session_id: &str) -> Option<WsOut
                 },
             })
         }
+        SystemEvent::CastDeviceDiscovered { device } => {
+            Some(WsOutMessage::CastDeviceDiscovered {
+                data: device.clone(),
+            })
+        }
+        SystemEvent::CastDeviceRemoved { device_id } => {
+            Some(WsOutMessage::CastDeviceRemoved {
+                data: CastDeviceRemovedData {
+                    device_id: device_id.clone(),
+                },
+            })
+        }
+        SystemEvent::CastSessionStarted { device } => {
+            Some(WsOutMessage::CastSessionStarted {
+                data: device.clone(),
+            })
+        }
+        SystemEvent::CastSessionStopped { device_id } => {
+            Some(WsOutMessage::CastSessionStopped {
+                data: CastDeviceRemovedData {
+                    device_id: device_id.clone(),
+                },
+            })
+        }
+        SystemEvent::CastError { message } => Some(WsOutMessage::CastError {
+            data: ErrorData {
+                message: message.clone(),
+            },
+        }),
+        SystemEvent::AirPlayDeviceDiscovered { device } => {
+            Some(WsOutMessage::AirPlayDeviceDiscovered {
+                data: device.clone(),
+            })
+        }
+        SystemEvent::AirPlayDeviceRemoved { device_name } => {
+            Some(WsOutMessage::AirPlayDeviceRemoved {
+                data: AirPlayDeviceRemovedData {
+                    device_name: device_name.clone(),
+                },
+            })
+        }
+        SystemEvent::AirPlaySessionStarted { device } => {
+            Some(WsOutMessage::AirPlaySessionStarted {
+                data: device.clone(),
+            })
+        }
+        SystemEvent::AirPlaySessionStopped { device_name } => {
+            Some(WsOutMessage::AirPlaySessionStopped {
+                data: AirPlayDeviceRemovedData {
+                    device_name: device_name.clone(),
+                },
+            })
+        }
+        SystemEvent::AirPlayError { message } => Some(WsOutMessage::AirPlayError {
+            data: ErrorData {
+                message: message.clone(),
+            },
+        }),
         _ => None,
     }
 }
@@ -255,6 +313,36 @@ enum WsOutMessage {
     WebrtcIceCandidate {
         data: IceCandidateData,
     },
+    CastDeviceDiscovered {
+        data: crate::audio::chromecast::CastDeviceInfo,
+    },
+    CastDeviceRemoved {
+        data: CastDeviceRemovedData,
+    },
+    CastSessionStarted {
+        data: crate::audio::chromecast::CastDeviceInfo,
+    },
+    CastSessionStopped {
+        data: CastDeviceRemovedData,
+    },
+    CastError {
+        data: ErrorData,
+    },
+    AirPlayDeviceDiscovered {
+        data: crate::audio::airplay::AirPlayDeviceInfo,
+    },
+    AirPlayDeviceRemoved {
+        data: AirPlayDeviceRemovedData,
+    },
+    AirPlaySessionStarted {
+        data: crate::audio::airplay::AirPlayDeviceInfo,
+    },
+    AirPlaySessionStopped {
+        data: AirPlayDeviceRemovedData,
+    },
+    AirPlayError {
+        data: ErrorData,
+    },
 }
 
 #[derive(Serialize)]
@@ -289,6 +377,21 @@ struct IceCandidateData {
     candidate: String,
     sdp_mid: Option<String>,
     sdp_mline_index: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct CastDeviceRemovedData {
+    device_id: String,
+}
+
+#[derive(Serialize)]
+struct AirPlayDeviceRemovedData {
+    device_name: String,
+}
+
+#[derive(Serialize)]
+struct ErrorData {
+    message: String,
 }
 
 // -- Incoming message types --
