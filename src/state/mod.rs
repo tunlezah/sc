@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::Instant;
 
+use crate::audio::airplay::AirPlayDeviceInfo;
+use crate::audio::chromecast::CastDeviceInfo;
 use crate::bluetooth::codecs::AudioCodec;
 use crate::bluetooth::device::{DeviceInfo, DeviceState};
 use crate::dsp::equalizer::EqBand;
@@ -59,6 +61,36 @@ pub enum SystemEvent {
         candidate: String,
         sdp_mid: Option<String>,
         sdp_mline_index: Option<u16>,
+    },
+    CastDeviceDiscovered {
+        device: CastDeviceInfo,
+    },
+    CastDeviceRemoved {
+        device_id: String,
+    },
+    CastSessionStarted {
+        device: CastDeviceInfo,
+    },
+    CastSessionStopped {
+        device_id: String,
+    },
+    CastError {
+        message: String,
+    },
+    AirPlayDeviceDiscovered {
+        device: AirPlayDeviceInfo,
+    },
+    AirPlayDeviceRemoved {
+        device_name: String,
+    },
+    AirPlaySessionStarted {
+        device: AirPlayDeviceInfo,
+    },
+    AirPlaySessionStopped {
+        device_name: String,
+    },
+    AirPlayError {
+        message: String,
     },
     Error {
         message: String,
@@ -121,6 +153,10 @@ pub struct AppStateSnapshot {
     pub line_in_active: bool,
     pub line_in_available: bool,
     pub device_name: String,
+    pub cast_devices: Vec<CastDeviceInfo>,
+    pub cast_active: Option<String>,
+    pub airplay_devices: Vec<AirPlayDeviceInfo>,
+    pub airplay_active: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +179,10 @@ pub struct AppState {
     pub line_in_source: Option<String>,
     pub pipewire_ready: bool,
     pub started_at: Instant,
+    pub cast_devices: HashMap<String, CastDeviceInfo>,
+    pub cast_active: Option<String>,
+    pub airplay_devices: HashMap<String, AirPlayDeviceInfo>,
+    pub airplay_active: Option<String>,
 }
 
 impl AppState {
@@ -160,6 +200,10 @@ impl AppState {
             line_in_source: None,
             pipewire_ready: false,
             started_at: Instant::now(),
+            cast_devices: HashMap::new(),
+            cast_active: None,
+            airplay_devices: HashMap::new(),
+            airplay_active: None,
         }
     }
 
@@ -177,6 +221,10 @@ impl AppState {
             line_in_active: self.line_in_active,
             line_in_available: self.line_in_source.is_some(),
             device_name: self.config.device_name.clone(),
+            cast_devices: self.cast_devices.values().cloned().collect(),
+            cast_active: self.cast_active.clone(),
+            airplay_devices: self.airplay_devices.values().cloned().collect(),
+            airplay_active: self.airplay_active.clone(),
         }
     }
 }
@@ -263,6 +311,10 @@ mod tests {
         assert!(!snap.line_in_active);
         assert!(!snap.line_in_available);
         assert_eq!(snap.device_name, "SoundSync");
+        assert!(snap.cast_devices.is_empty());
+        assert!(snap.cast_active.is_none());
+        assert!(snap.airplay_devices.is_empty());
+        assert!(snap.airplay_active.is_none());
     }
 
     #[test]

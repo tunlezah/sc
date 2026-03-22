@@ -1,6 +1,6 @@
 [package]
 name = "soundsync"
-version = "1.2.0"
+version = "2.0.0"
 edition = "2021"
 description = "Bluetooth A2DP Sink with DSP EQ, WebRTC streaming, and Web UI"
 license = "MIT"
@@ -18,6 +18,11 @@ zvariant = "4"
 # Audio
 # pipewire = "0.8" # Used via subprocess, not linked directly
 opus = "0.3"
+mp3lame-encoder = "0.2"
+
+# Chromecast
+rust_cast = "0.19"
+mdns-sd = "0.11"
 
 # DSP
 rustfft = "6.2"

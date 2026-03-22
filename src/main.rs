@@ -11,6 +11,8 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 
+use crate::audio::airplay::{AirPlayCommand, AirPlayManager};
+use crate::audio::chromecast::{ChromecastCommand, ChromecastManager};
 use crate::audio::line_in::LineInManager;
 use crate::audio::pipeline::AudioPipeline;
 use crate::audio::spectrum::SpectrumAnalyzer;
@@ -49,6 +51,8 @@ async fn main() {
     let (bt_cmd_tx, bt_cmd_rx) = mpsc::channel::<BluetoothCommand>(32);
     let (avrcp_cmd_tx, avrcp_cmd_rx) = mpsc::channel::<AvrcpCommand>(32);
     let (webrtc_cmd_tx, webrtc_cmd_rx) = mpsc::channel::<WebRtcCommand>(32);
+    let (cast_cmd_tx, cast_cmd_rx) = mpsc::channel::<ChromecastCommand>(32);
+    let (airplay_cmd_tx, airplay_cmd_rx) = mpsc::channel::<AirPlayCommand>(32);
 
     // Initialize line-in manager
     let line_in = Arc::new(LineInManager::new(state.clone()));
@@ -87,6 +91,20 @@ async fn main() {
         }
     });
 
+    // Start Chromecast manager
+    let cast_state = state.clone();
+    tokio::spawn(async move {
+        let manager = ChromecastManager::new(cast_state, port);
+        manager.run(cast_cmd_rx).await;
+    });
+
+    // Start AirPlay manager
+    let airplay_state = state.clone();
+    tokio::spawn(async move {
+        let manager = AirPlayManager::new(airplay_state).await;
+        manager.run(airplay_cmd_rx).await;
+    });
+
     // Start Bluetooth manager
     let bt_state = state.clone();
     let bt_manager = BluetoothManager::new(bt_state, bt_cmd_rx);
@@ -118,6 +136,9 @@ async fn main() {
         avrcp_monitor.run().await;
     });
 
+    // Get audio sender for HTTP streaming endpoint
+    let stream_audio_sender = pipeline.audio_sender();
+
     // Create web router
     let app_router = AppRouter {
         state: state.clone(),
@@ -125,6 +146,9 @@ async fn main() {
         avrcp_cmd_tx,
         line_in,
         webrtc_cmd_tx: Some(webrtc_cmd_tx),
+        cast_cmd_tx: Some(cast_cmd_tx),
+        airplay_cmd_tx: Some(airplay_cmd_tx),
+        audio_sender: Some(stream_audio_sender),
     };
 
     let cors = CorsLayer::new()

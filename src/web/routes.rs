@@ -5,8 +5,10 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
+use crate::audio::airplay::{AirPlayCommand, AirPlayDeviceInfo};
+use crate::audio::chromecast::{CastDeviceInfo, ChromecastCommand};
 use crate::audio::line_in::LineInManager;
 use crate::audio::webrtc_audio::WebRtcCommand;
 use crate::bluetooth::avrcp::AvrcpCommand;
@@ -22,6 +24,9 @@ pub struct AppRouter {
     pub avrcp_cmd_tx: mpsc::Sender<AvrcpCommand>,
     pub line_in: Arc<LineInManager>,
     pub webrtc_cmd_tx: Option<mpsc::Sender<WebRtcCommand>>,
+    pub cast_cmd_tx: Option<mpsc::Sender<ChromecastCommand>>,
+    pub airplay_cmd_tx: Option<mpsc::Sender<AirPlayCommand>>,
+    pub audio_sender: Option<broadcast::Sender<Vec<f32>>>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +74,21 @@ struct PresetRequest {
     name: String,
 }
 
+#[derive(Deserialize)]
+struct CastConnectRequest {
+    device_id: String,
+}
+
+#[derive(Deserialize)]
+struct AirPlayConnectRequest {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct VolumeRequest {
+    level: f32,
+}
+
 fn ok_response() -> Json<OkResponse> {
     Json(OkResponse { ok: true })
 }
@@ -100,6 +120,20 @@ pub fn create_router(app: AppRouter) -> Router {
         .route("/api/avrcp/pause", post(post_avrcp_pause))
         .route("/api/avrcp/next", post(post_avrcp_next))
         .route("/api/avrcp/previous", post(post_avrcp_previous))
+        // Chromecast
+        .route("/api/cast/devices", get(get_cast_devices))
+        .route("/api/cast/discover", post(post_cast_discover))
+        .route("/api/cast/connect", post(post_cast_connect))
+        .route("/api/cast/disconnect", post(post_cast_disconnect))
+        .route("/api/cast/volume", post(post_cast_volume))
+        // AirPlay
+        .route("/api/airplay/devices", get(get_airplay_devices))
+        .route("/api/airplay/discover", post(post_airplay_discover))
+        .route("/api/airplay/connect", post(post_airplay_connect))
+        .route("/api/airplay/disconnect", post(post_airplay_disconnect))
+        .route("/api/airplay/volume", post(post_airplay_volume))
+        // HTTP Audio Stream
+        .route("/api/stream/audio.mp3", get(get_audio_stream))
         // WebSocket
         .route("/ws/status", get(ws::ws_handler))
         .with_state(app)
@@ -313,4 +347,112 @@ async fn post_avrcp_next(State(app): State<AppRouter>) -> Json<OkResponse> {
 async fn post_avrcp_previous(State(app): State<AppRouter>) -> Json<OkResponse> {
     let _ = app.avrcp_cmd_tx.send(AvrcpCommand::Previous).await;
     ok_response()
+}
+
+// -- Chromecast endpoints --
+
+async fn get_cast_devices(State(app): State<AppRouter>) -> Json<Vec<CastDeviceInfo>> {
+    let state = app.state.state.read().await;
+    Json(state.cast_devices.values().cloned().collect())
+}
+
+async fn post_cast_discover(State(app): State<AppRouter>) -> Json<OkResponse> {
+    if let Some(ref tx) = app.cast_cmd_tx {
+        let _ = tx.send(ChromecastCommand::Discover).await;
+    }
+    ok_response()
+}
+
+async fn post_cast_connect(
+    State(app): State<AppRouter>,
+    Json(body): Json<CastConnectRequest>,
+) -> Json<OkResponse> {
+    if let Some(ref tx) = app.cast_cmd_tx {
+        let _ = tx
+            .send(ChromecastCommand::Connect {
+                device_id: body.device_id,
+            })
+            .await;
+    }
+    ok_response()
+}
+
+async fn post_cast_disconnect(State(app): State<AppRouter>) -> Json<OkResponse> {
+    if let Some(ref tx) = app.cast_cmd_tx {
+        let _ = tx.send(ChromecastCommand::Disconnect).await;
+    }
+    ok_response()
+}
+
+async fn post_cast_volume(
+    State(app): State<AppRouter>,
+    Json(body): Json<VolumeRequest>,
+) -> Json<OkResponse> {
+    if let Some(ref tx) = app.cast_cmd_tx {
+        let _ = tx
+            .send(ChromecastCommand::SetVolume {
+                level: body.level,
+            })
+            .await;
+    }
+    ok_response()
+}
+
+// -- AirPlay endpoints --
+
+async fn get_airplay_devices(State(app): State<AppRouter>) -> Json<Vec<AirPlayDeviceInfo>> {
+    let state = app.state.state.read().await;
+    Json(state.airplay_devices.values().cloned().collect())
+}
+
+async fn post_airplay_discover(State(app): State<AppRouter>) -> Json<OkResponse> {
+    if let Some(ref tx) = app.airplay_cmd_tx {
+        let _ = tx.send(AirPlayCommand::Discover).await;
+    }
+    ok_response()
+}
+
+async fn post_airplay_connect(
+    State(app): State<AppRouter>,
+    Json(body): Json<AirPlayConnectRequest>,
+) -> Json<OkResponse> {
+    if let Some(ref tx) = app.airplay_cmd_tx {
+        let _ = tx
+            .send(AirPlayCommand::Connect { name: body.name })
+            .await;
+    }
+    ok_response()
+}
+
+async fn post_airplay_disconnect(State(app): State<AppRouter>) -> Json<OkResponse> {
+    if let Some(ref tx) = app.airplay_cmd_tx {
+        let _ = tx.send(AirPlayCommand::Disconnect).await;
+    }
+    ok_response()
+}
+
+async fn post_airplay_volume(
+    State(app): State<AppRouter>,
+    Json(body): Json<VolumeRequest>,
+) -> Json<OkResponse> {
+    if let Some(ref tx) = app.airplay_cmd_tx {
+        let _ = tx
+            .send(AirPlayCommand::SetVolume { level: body.level })
+            .await;
+    }
+    ok_response()
+}
+
+// -- HTTP Audio Stream endpoint --
+
+async fn get_audio_stream(
+    State(app): State<AppRouter>,
+) -> Result<axum::response::Response, StatusCode> {
+    let audio_sender = app
+        .audio_sender
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?
+        .clone();
+
+    crate::audio::cast_stream::stream_audio_mp3(audio_sender).await
 }

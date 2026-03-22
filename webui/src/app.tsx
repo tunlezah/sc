@@ -6,6 +6,7 @@ import { EQControls } from './components/EQControls/EQControls';
 import { SpectrumVisualizer } from './components/SpectrumVisualizer/SpectrumVisualizer';
 import { MediaControls } from './components/MediaControls/MediaControls';
 import { AudioPlayer } from './components/AudioPlayer/AudioPlayer';
+import { AudioOutput } from './components/AudioOutput/AudioOutput';
 import { LineIn } from './components/LineIn/LineIn';
 import { Settings } from './components/Settings/Settings';
 
@@ -30,6 +31,13 @@ export function App() {
         devices={state.devices}
         activeDevice={state.active_device}
         status={state.status}
+      />
+
+      <AudioOutput
+        castDevices={state.cast_devices}
+        castActive={state.cast_active}
+        airplayDevices={state.airplay_devices}
+        airplayActive={state.airplay_active}
       />
 
       <EQControls

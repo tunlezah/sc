@@ -12,6 +12,10 @@ const defaultState: AppState = {
   line_in_active: false,
   line_in_available: false,
   device_name: 'SoundSync',
+  cast_devices: [],
+  cast_active: null,
+  airplay_devices: [],
+  airplay_active: null,
 };
 
 export function useAppState() {
@@ -70,6 +74,72 @@ export function useAppState() {
 
         case 'bluetooth_status_changed':
           setState((prev) => ({ ...prev, status: msg.data.status }));
+          break;
+
+        // Chromecast events
+        case 'cast_device_discovered':
+          setState((prev) => {
+            const castDevices = [...prev.cast_devices];
+            const idx = castDevices.findIndex((d) => d.id === msg.data.id);
+            if (idx >= 0) {
+              castDevices[idx] = msg.data;
+            } else {
+              castDevices.push(msg.data);
+            }
+            return { ...prev, cast_devices: castDevices };
+          });
+          break;
+
+        case 'cast_device_removed':
+          setState((prev) => ({
+            ...prev,
+            cast_devices: prev.cast_devices.filter((d) => d.id !== msg.data.device_id),
+          }));
+          break;
+
+        case 'cast_session_started':
+          setState((prev) => ({ ...prev, cast_active: msg.data.id }));
+          break;
+
+        case 'cast_session_stopped':
+          setState((prev) => ({ ...prev, cast_active: null }));
+          break;
+
+        case 'cast_error':
+          console.error('Chromecast error:', msg.data.message);
+          break;
+
+        // AirPlay events
+        case 'air_play_device_discovered':
+          setState((prev) => {
+            const airplayDevices = [...prev.airplay_devices];
+            const idx = airplayDevices.findIndex((d) => d.name === msg.data.name);
+            if (idx >= 0) {
+              airplayDevices[idx] = msg.data;
+            } else {
+              airplayDevices.push(msg.data);
+            }
+            return { ...prev, airplay_devices: airplayDevices };
+          });
+          break;
+
+        case 'air_play_device_removed':
+          setState((prev) => ({
+            ...prev,
+            airplay_devices: prev.airplay_devices.filter((d) => d.name !== msg.data.device_name),
+          }));
+          break;
+
+        case 'air_play_session_started':
+          setState((prev) => ({ ...prev, airplay_active: msg.data.name }));
+          break;
+
+        case 'air_play_session_stopped':
+          setState((prev) => ({ ...prev, airplay_active: null }));
+          break;
+
+        case 'air_play_error':
+          console.error('AirPlay error:', msg.data.message);
           break;
       }
     });

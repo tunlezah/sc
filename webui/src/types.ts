@@ -39,6 +39,21 @@ export interface TrackInfo {
   track_number: number | null;
 }
 
+export interface CastDevice {
+  id: string;
+  name: string;
+  address: string;
+  port: number;
+  model: string;
+}
+
+export interface AirPlayDevice {
+  name: string;
+  address: string;
+  port: number;
+  model: string;
+}
+
 export interface AppState {
   status: string;
   devices: DeviceInfo[];
@@ -49,6 +64,10 @@ export interface AppState {
   line_in_active: boolean;
   line_in_available: boolean;
   device_name: string;
+  cast_devices: CastDevice[];
+  cast_active: string | null;
+  airplay_devices: AirPlayDevice[];
+  airplay_active: string | null;
 }
 
 export type WsMessage =
@@ -60,4 +79,14 @@ export type WsMessage =
   | { type: 'spectrum_data'; data: { bands: number[] } }
   | { type: 'bluetooth_status_changed'; data: { status: string } }
   | { type: 'webrtc_answer'; data: { sdp: string } }
-  | { type: 'webrtc_ice_candidate'; data: RTCIceCandidateInit };
+  | { type: 'webrtc_ice_candidate'; data: RTCIceCandidateInit }
+  | { type: 'cast_device_discovered'; data: CastDevice }
+  | { type: 'cast_device_removed'; data: { device_id: string } }
+  | { type: 'cast_session_started'; data: CastDevice }
+  | { type: 'cast_session_stopped'; data: { device_id: string } }
+  | { type: 'cast_error'; data: { message: string } }
+  | { type: 'air_play_device_discovered'; data: AirPlayDevice }
+  | { type: 'air_play_device_removed'; data: { device_name: string } }
+  | { type: 'air_play_session_started'; data: AirPlayDevice }
+  | { type: 'air_play_session_stopped'; data: { device_name: string } }
+  | { type: 'air_play_error'; data: { message: string } };
