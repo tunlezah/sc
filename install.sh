@@ -67,11 +67,10 @@ install_dependencies() {
     apt-get install -y -qq \
         bluetooth bluez \
         pipewire pipewire-pulse wireplumber \
-        pipewire-module-raop \
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
         libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential \
         avahi-daemon avahi-utils \
-        git curl
+        git curl unzip
 
     # Install Rust if not present
     if ! command -v cargo &>/dev/null; then
