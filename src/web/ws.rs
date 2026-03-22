@@ -24,7 +24,9 @@ async fn handle_socket(socket: WebSocket, app: AppRouter) {
     {
         let state = app.state.state.read().await;
         let snapshot = state.snapshot();
-        let msg = WsOutMessage::StateSnapshot { data: Box::new(snapshot) };
+        let msg = WsOutMessage::StateSnapshot {
+            data: Box::new(snapshot),
+        };
         if let Ok(json) = serde_json::to_string(&msg) {
             let _ = sender.send(Message::Text(json)).await;
         }
