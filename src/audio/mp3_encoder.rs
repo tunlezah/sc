@@ -14,7 +14,7 @@ pub struct Mp3Encoder {
 impl Mp3Encoder {
     /// Create a new MP3 encoder configured for Chromecast audio streaming.
     pub fn new() -> Result<Self, String> {
-        let mut builder = Builder::new().map_err(|e| format!("MP3 builder error: {:?}", e))?;
+        let mut builder = Builder::new().ok_or("Failed to create MP3 encoder builder")?;
         builder
             .set_sample_rate(48_000)
             .map_err(|e| format!("MP3 set sample rate error: {:?}", e))?;
@@ -32,9 +32,8 @@ impl Mp3Encoder {
             .build()
             .map_err(|e| format!("MP3 encoder build error: {:?}", e))?;
 
-        // MP3 buffer: generous allocation for max possible frame size.
-        // LAME documentation recommends 1.25 * num_samples + 7200 bytes.
-        let mp3_buf = vec![0u8; 8192];
+        // MP3 buffer used by encode_to_vec/flush_to_vec
+        let mp3_buf = Vec::with_capacity(8192);
 
         Ok(Self { encoder, mp3_buf })
     }
@@ -54,8 +53,9 @@ impl Mp3Encoder {
             .collect();
 
         let input = InterleavedPcm(&pcm_i16);
+        self.mp3_buf.clear();
 
-        match self.encoder.encode(input, &mut self.mp3_buf) {
+        match self.encoder.encode_to_vec(input, &mut self.mp3_buf) {
             Ok(len) if len > 0 => Some(self.mp3_buf[..len].to_vec()),
             Ok(_) => None,
             Err(e) => {
@@ -68,7 +68,8 @@ impl Mp3Encoder {
     /// Flush any remaining MP3 data from the encoder.
     /// Call this when the stream is ending to get the final MP3 bytes.
     pub fn flush(&mut self) -> Option<Vec<u8>> {
-        match self.encoder.flush::<FlushNoGap>(&mut self.mp3_buf) {
+        self.mp3_buf.clear();
+        match self.encoder.flush_to_vec::<FlushNoGap>(&mut self.mp3_buf) {
             Ok(len) if len > 0 => Some(self.mp3_buf[..len].to_vec()),
             Ok(_) => None,
             Err(e) => {

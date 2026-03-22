@@ -1,14 +1,14 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use rust_cast::channels::heartbeat::HeartbeatResponse;
 use rust_cast::channels::media::{Media, StreamType};
+use rust_cast::channels::receiver::CastDeviceApp;
 use rust_cast::{CastDevice, ChannelMessage};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -18,7 +18,6 @@ use crate::state::{AppStateHandle, SystemEvent};
 const MDNS_SERVICE_TYPE: &str = "_googlecast._tcp.local.";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_MEDIA_RECEIVER_APP_ID: &str = "CC1AD845";
 
 /// Commands sent from the web API to the Chromecast manager.
@@ -147,16 +146,19 @@ impl ChromecastManager {
                 {
                     Ok(Ok(Ok(event))) => match event {
                         ServiceEvent::ServiceResolved(info) => {
-                            let addresses: Vec<&IpAddr> = info.get_addresses().iter().collect();
-                            if let Some(addr) = addresses.into_iter().find(|a| a.is_ipv4()) {
+                            let addresses_v4 = info.get_addresses_v4();
+                            if let Some(addr) = addresses_v4.into_iter().next() {
                                 let device_name = info
                                     .get_property_val_str("fn")
-                                    .unwrap_or_else(|| info.get_fullname().to_string());
+                                    .unwrap_or_else(|| info.get_fullname())
+                                    .to_string();
                                 let model = info
                                     .get_property_val_str("md")
-                                    .unwrap_or_else(|| "Chromecast".to_string());
+                                    .unwrap_or("Chromecast")
+                                    .to_string();
                                 let device_id = info
                                     .get_property_val_str("id")
+                                    .map(|s| s.to_string())
                                     .unwrap_or_else(|| format!("{}:{}", addr, info.get_port()));
 
                                 let device_info = CastDeviceInfo {
@@ -393,10 +395,11 @@ fn connect_and_play(address: &str, port: u16, stream_url: &str) -> Result<String
     // Launch or get the default media receiver app
     let app = device
         .receiver
-        .launch_app(&rust_cast::channels::receiver::APP_DEFAULT_MEDIA_RECEIVER)
+        .launch_app(&CastDeviceApp::DefaultMediaReceiver)
         .map_err(|e| format!("Failed to launch media receiver: {}", e))?;
 
     let transport_id = app.transport_id.clone();
+    let session_id = app.session_id.clone();
 
     // Connect to the media receiver transport
     device
@@ -415,7 +418,7 @@ fn connect_and_play(address: &str, port: u16, stream_url: &str) -> Result<String
 
     device
         .media
-        .load(&transport_id, &media, true, false, None)
+        .load(&transport_id, &session_id, &media)
         .map_err(|e| format!("Failed to load media: {}", e))?;
 
     info!(
@@ -557,8 +560,20 @@ fn disconnect_device(address: &str, port: u16) {
     match CastDevice::connect_without_host_verification(address, port) {
         Ok(device) => {
             let _ = device.connection.connect("receiver-0");
-            let _ = device.receiver.stop_app("receiver-0");
-            info!("Chromecast stop command sent");
+            // Get the running app's session_id to stop it
+            if let Ok(status) = device.receiver.get_status() {
+                for app in &status.applications {
+                    if app.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID {
+                        let _ = device.receiver.stop_app(&app.session_id);
+                        info!(
+                            "Chromecast stop command sent for session {}",
+                            app.session_id
+                        );
+                        return;
+                    }
+                }
+            }
+            info!("No active media receiver app found to stop");
         }
         Err(e) => {
             warn!("Could not connect to send stop command: {}", e);
