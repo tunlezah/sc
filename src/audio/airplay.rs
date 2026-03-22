@@ -82,7 +82,10 @@ impl AirPlayManager {
 
     /// Run the AirPlay manager, processing commands from the channel.
     pub async fn run(mut self, mut cmd_rx: mpsc::Receiver<AirPlayCommand>) {
-        info!("AirPlay manager started (RAOP available: {})", self.raop_available);
+        info!(
+            "AirPlay manager started (RAOP available: {})",
+            self.raop_available
+        );
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 AirPlayCommand::Discover => {
@@ -173,9 +176,15 @@ impl AirPlayManager {
                 match load_raop_sink(&device_info).await {
                     Ok(name) => name,
                     Err(e) => {
-                        error!("Failed to find or create RAOP sink for {}: {}", device_info.name, e);
+                        error!(
+                            "Failed to find or create RAOP sink for {}: {}",
+                            device_info.name, e
+                        );
                         self.state.publish(SystemEvent::AirPlayError {
-                            message: format!("Cannot create audio route to {}: {}", device_info.name, e),
+                            message: format!(
+                                "Cannot create audio route to {}: {}",
+                                device_info.name, e
+                            ),
                         });
                         return;
                     }
@@ -248,9 +257,8 @@ impl AirPlayManager {
                 app.airplay_active = None;
             }
 
-            self.state.publish(SystemEvent::AirPlaySessionStopped {
-                device_name,
-            });
+            self.state
+                .publish(SystemEvent::AirPlaySessionStopped { device_name });
         }
     }
 
@@ -418,8 +426,7 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
 
             // Extract model from TXT record if available
             let model = if fields.len() > 9 {
-                extract_txt_field(fields[9], "am")
-                    .unwrap_or_else(|| "AirPlay".to_string())
+                extract_txt_field(fields[9], "am").unwrap_or_else(|| "AirPlay".to_string())
             } else {
                 "AirPlay".to_string()
             };
@@ -445,10 +452,7 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
 async fn discover_via_pw_cli() -> Vec<AirPlayDeviceInfo> {
     let mut devices = Vec::new();
 
-    let result = Command::new("pw-cli")
-        .args(["list-objects"])
-        .output()
-        .await;
+    let result = Command::new("pw-cli").args(["list-objects"]).output().await;
 
     if let Ok(output) = result {
         if output.status.success() {
@@ -547,10 +551,7 @@ async fn find_raop_sink(device: &AirPlayDeviceInfo) -> Option<String> {
 
 /// Load a RAOP sink for a specific device via pactl.
 async fn load_raop_sink(device: &AirPlayDeviceInfo) -> Result<String, String> {
-    let sink_name = format!(
-        "raop_sink.{}",
-        device.address.replace('.', "_")
-    );
+    let sink_name = format!("raop_sink.{}", device.address.replace('.', "_"));
 
     let result = Command::new("pactl")
         .args([
@@ -558,10 +559,7 @@ async fn load_raop_sink(device: &AirPlayDeviceInfo) -> Result<String, String> {
             "module-raop-sink",
             &format!("server=[{}]:{}", device.address, device.port),
             &format!("sink_name={}", sink_name),
-            &format!(
-                "sink_properties=device.description=\"{}\"",
-                device.name
-            ),
+            &format!("sink_properties=device.description=\"{}\"", device.name),
         ])
         .output()
         .await
@@ -605,7 +603,10 @@ async fn create_pw_links(source_sink: &str, target_sink: &str) -> Result<Vec<Str
             // If the link already exists, that's fine
             if stderr.contains("already linked") || stderr.contains("File exists") {
                 link_ids.push(format!("{}|{}", source_port, target_port));
-                debug!("PipeWire link already exists: {} -> {}", source_port, target_port);
+                debug!(
+                    "PipeWire link already exists: {} -> {}",
+                    source_port, target_port
+                );
             } else {
                 return Err(format!(
                     "pw-link failed for {} -> {}: {}",
@@ -643,11 +644,7 @@ async fn remove_pw_link(link_id: &str) {
 }
 
 /// Monitor an AirPlay session to detect disconnection.
-async fn run_airplay_monitor(
-    sink_name: String,
-    state: AppStateHandle,
-    device_name: String,
-) {
+async fn run_airplay_monitor(sink_name: String, state: AppStateHandle, device_name: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
 
     loop {
