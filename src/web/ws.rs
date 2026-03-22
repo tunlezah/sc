@@ -219,30 +219,22 @@ fn event_to_ws_message(event: &SystemEvent, ws_session_id: &str) -> Option<WsOut
                 },
             })
         }
-        SystemEvent::CastDeviceDiscovered { device } => {
-            Some(WsOutMessage::CastDeviceDiscovered {
-                data: device.clone(),
-            })
-        }
-        SystemEvent::CastDeviceRemoved { device_id } => {
-            Some(WsOutMessage::CastDeviceRemoved {
-                data: CastDeviceRemovedData {
-                    device_id: device_id.clone(),
-                },
-            })
-        }
-        SystemEvent::CastSessionStarted { device } => {
-            Some(WsOutMessage::CastSessionStarted {
-                data: device.clone(),
-            })
-        }
-        SystemEvent::CastSessionStopped { device_id } => {
-            Some(WsOutMessage::CastSessionStopped {
-                data: CastDeviceRemovedData {
-                    device_id: device_id.clone(),
-                },
-            })
-        }
+        SystemEvent::CastDeviceDiscovered { device } => Some(WsOutMessage::CastDeviceDiscovered {
+            data: device.clone(),
+        }),
+        SystemEvent::CastDeviceRemoved { device_id } => Some(WsOutMessage::CastDeviceRemoved {
+            data: CastDeviceRemovedData {
+                device_id: device_id.clone(),
+            },
+        }),
+        SystemEvent::CastSessionStarted { device } => Some(WsOutMessage::CastSessionStarted {
+            data: device.clone(),
+        }),
+        SystemEvent::CastSessionStopped { device_id } => Some(WsOutMessage::CastSessionStopped {
+            data: CastDeviceRemovedData {
+                device_id: device_id.clone(),
+            },
+        }),
         SystemEvent::CastError { message } => Some(WsOutMessage::CastError {
             data: ErrorData {
                 message: message.clone(),

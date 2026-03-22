@@ -25,32 +25,29 @@ pub async fn stream_audio_mp3(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let stream = stream::unfold(
-        (audio_rx, encoder),
-        |(mut rx, mut enc)| async move {
-            loop {
-                match rx.recv().await {
-                    Ok(pcm_samples) => {
-                        if let Some(mp3_data) = enc.encode_frame(&pcm_samples) {
-                            return Some((Ok::<_, std::io::Error>(mp3_data), (rx, enc)));
-                        }
-                        // Encoder buffered the frame, continue to next
+    let stream = stream::unfold((audio_rx, encoder), |(mut rx, mut enc)| async move {
+        loop {
+            match rx.recv().await {
+                Ok(pcm_samples) => {
+                    if let Some(mp3_data) = enc.encode_frame(&pcm_samples) {
+                        return Some((Ok::<_, std::io::Error>(mp3_data), (rx, enc)));
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        debug!("MP3 stream lagged by {} frames, skipping", n);
-                        continue;
+                    // Encoder buffered the frame, continue to next
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    debug!("MP3 stream lagged by {} frames, skipping", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    // Channel closed, flush encoder and end stream
+                    if let Some(final_data) = enc.flush() {
+                        return Some((Ok(final_data), (rx, enc)));
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // Channel closed, flush encoder and end stream
-                        if let Some(final_data) = enc.flush() {
-                            return Some((Ok(final_data), (rx, enc)));
-                        }
-                        return None;
-                    }
+                    return None;
                 }
             }
-        },
-    );
+        }
+    });
 
     let body = Body::from_stream(stream);
 
@@ -68,10 +65,7 @@ pub async fn stream_audio_mp3(
 /// Detects the local IP address by inspecting the network interfaces.
 /// Returns the first non-loopback IPv4 address found, or falls back to "127.0.0.1".
 pub fn detect_local_ip() -> String {
-    if let Ok(output) = std::process::Command::new("hostname")
-        .arg("-I")
-        .output()
-    {
+    if let Ok(output) = std::process::Command::new("hostname").arg("-I").output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(ip) = stdout.split_whitespace().next() {

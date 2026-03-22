@@ -390,9 +390,7 @@ async fn post_cast_volume(
 ) -> Json<OkResponse> {
     if let Some(ref tx) = app.cast_cmd_tx {
         let _ = tx
-            .send(ChromecastCommand::SetVolume {
-                level: body.level,
-            })
+            .send(ChromecastCommand::SetVolume { level: body.level })
             .await;
     }
     ok_response()
@@ -417,9 +415,7 @@ async fn post_airplay_connect(
     Json(body): Json<AirPlayConnectRequest>,
 ) -> Json<OkResponse> {
     if let Some(ref tx) = app.airplay_cmd_tx {
-        let _ = tx
-            .send(AirPlayCommand::Connect { name: body.name })
-            .await;
+        let _ = tx.send(AirPlayCommand::Connect { name: body.name }).await;
     }
     ok_response()
 }

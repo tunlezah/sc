@@ -136,16 +136,18 @@ impl ChromecastManager {
                     break;
                 }
 
-                match tokio::time::timeout(timeout, tokio::task::spawn_blocking({
-                    let receiver = receiver.clone();
-                    move || receiver.recv_timeout(Duration::from_secs(2))
-                }))
+                match tokio::time::timeout(
+                    timeout,
+                    tokio::task::spawn_blocking({
+                        let receiver = receiver.clone();
+                        move || receiver.recv_timeout(Duration::from_secs(2))
+                    }),
+                )
                 .await
                 {
                     Ok(Ok(Ok(event))) => match event {
                         ServiceEvent::ServiceResolved(info) => {
-                            let addresses: Vec<&IpAddr> =
-                                info.get_addresses().iter().collect();
+                            let addresses: Vec<&IpAddr> = info.get_addresses().iter().collect();
                             if let Some(addr) = addresses.into_iter().find(|a| a.is_ipv4()) {
                                 let device_name = info
                                     .get_property_val_str("fn")
@@ -155,9 +157,7 @@ impl ChromecastManager {
                                     .unwrap_or_else(|| "Chromecast".to_string());
                                 let device_id = info
                                     .get_property_val_str("id")
-                                    .unwrap_or_else(|| {
-                                        format!("{}:{}", addr, info.get_port())
-                                    });
+                                    .unwrap_or_else(|| format!("{}:{}", addr, info.get_port()));
 
                                 let device_info = CastDeviceInfo {
                                     id: device_id.clone(),
@@ -196,9 +196,7 @@ impl ChromecastManager {
                             if let Some(id) = removed_id {
                                 devs.remove(&id);
                                 drop(devs);
-                                state.publish(SystemEvent::CastDeviceRemoved {
-                                    device_id: id,
-                                });
+                                state.publish(SystemEvent::CastDeviceRemoved { device_id: id });
                             }
                         }
                         _ => {}
@@ -256,10 +254,9 @@ impl ChromecastManager {
         let port = device_info.port;
 
         // Connect and start media in a blocking task (rust_cast uses synchronous I/O)
-        let connect_result = tokio::task::spawn_blocking(move || {
-            connect_and_play(&address, port, &stream_url)
-        })
-        .await;
+        let connect_result =
+            tokio::task::spawn_blocking(move || connect_and_play(&address, port, &stream_url))
+                .await;
 
         match connect_result {
             Ok(Ok(transport_id)) => {
@@ -326,7 +323,10 @@ impl ChromecastManager {
     /// Disconnect from the active Chromecast session.
     async fn handle_disconnect(&mut self) {
         if let Some(session) = self.active_session.take() {
-            info!("Disconnecting from Chromecast: {}", session.device_info.name);
+            info!(
+                "Disconnecting from Chromecast: {}",
+                session.device_info.name
+            );
 
             session.heartbeat_task.abort();
             session.stream_task.abort();
@@ -347,7 +347,8 @@ impl ChromecastManager {
                 app.cast_active = None;
             }
 
-            self.state.publish(SystemEvent::CastSessionStopped { device_id });
+            self.state
+                .publish(SystemEvent::CastSessionStopped { device_id });
         }
     }
 
@@ -358,10 +359,9 @@ impl ChromecastManager {
             let port = session.device_info.port;
             let volume = level.clamp(0.0, 1.0);
 
-            let result = tokio::task::spawn_blocking(move || {
-                set_device_volume(&address, port, volume)
-            })
-            .await;
+            let result =
+                tokio::task::spawn_blocking(move || set_device_volume(&address, port, volume))
+                    .await;
 
             match result {
                 Ok(Ok(())) => {
@@ -418,18 +418,16 @@ fn connect_and_play(address: &str, port: u16, stream_url: &str) -> Result<String
         .load(&transport_id, &media, true, false, None)
         .map_err(|e| format!("Failed to load media: {}", e))?;
 
-    info!("Chromecast playing: {} (transport: {})", stream_url, transport_id);
+    info!(
+        "Chromecast playing: {} (transport: {})",
+        stream_url, transport_id
+    );
 
     Ok(transport_id)
 }
 
 /// Periodically sends heartbeat pings to keep the Chromecast connection alive.
-async fn run_heartbeat_loop(
-    address: String,
-    port: u16,
-    state: AppStateHandle,
-    device_id: String,
-) {
+async fn run_heartbeat_loop(address: String, port: u16, state: AppStateHandle, device_id: String) {
     let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut consecutive_failures: u32 = 0;
     const MAX_FAILURES: u32 = 3;
@@ -438,10 +436,7 @@ async fn run_heartbeat_loop(
         interval.tick().await;
 
         let addr = address.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            send_heartbeat(&addr, port)
-        })
-        .await;
+        let result = tokio::task::spawn_blocking(move || send_heartbeat(&addr, port)).await;
 
         match result {
             Ok(Ok(())) => {
@@ -477,22 +472,14 @@ async fn run_heartbeat_loop(
 }
 
 /// Monitor the Chromecast session for status changes and errors.
-async fn run_session_monitor(
-    address: String,
-    port: u16,
-    state: AppStateHandle,
-    device_id: String,
-) {
+async fn run_session_monitor(address: String, port: u16, state: AppStateHandle, device_id: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(10));
 
     loop {
         interval.tick().await;
 
         let addr = address.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            check_session_status(&addr, port)
-        })
-        .await;
+        let result = tokio::task::spawn_blocking(move || check_session_status(&addr, port)).await;
 
         match result {
             Ok(Ok(active)) => {
