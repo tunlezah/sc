@@ -151,10 +151,76 @@ configure_avahi() {
 # -------------------------------------------------------------------
 # 4. Build SoundSync
 # -------------------------------------------------------------------
+
+# Check if a directory contains a valid webui build (index.html + JS assets)
+webui_dist_is_valid() {
+    local dir="$1"
+    [[ -d "${dir}" ]] \
+        && [[ -f "${dir}/index.html" ]] \
+        && ls "${dir}"/assets/*.js &>/dev/null
+}
+
+# Search all known locations for a valid webui dist.
+# Sets FOUND_WEBUI_DIST to the path if found, empty otherwise.
+find_webui_dist() {
+    FOUND_WEBUI_DIST=""
+
+    local candidates=(
+        "${INSTALL_DIR}/webui/dist"       # already installed
+        "${REPO_DIR}/webui/dist"          # built in source tree
+        "${REPO_DIR}/dist"                # alternate flat layout
+    )
+
+    for dir in "${candidates[@]}"; do
+        if webui_dist_is_valid "${dir}"; then
+            FOUND_WEBUI_DIST="${dir}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Try to extract webui from a ZIP file if one exists.
+# Returns 0 and sets FOUND_WEBUI_DIST on success.
+try_extract_webui_zip() {
+    local zip_candidates=(
+        "${REPO_DIR}/soundsync-webui.zip"
+        "${REPO_DIR}/webui.zip"
+        "${REPO_DIR}/webui/dist.zip"
+    )
+
+    for zipfile in "${zip_candidates[@]}"; do
+        if [[ -f "${zipfile}" ]]; then
+            log "Found webui archive: ${zipfile}"
+            local tmp_extract
+            tmp_extract="$(mktemp -d)"
+            if unzip -qo "${zipfile}" -d "${tmp_extract}" 2>/dev/null; then
+                # The zip may contain a top-level dist/ folder or files directly
+                if webui_dist_is_valid "${tmp_extract}/dist"; then
+                    mkdir -p "${WEBUI_DIST}"
+                    cp -r "${tmp_extract}/dist/"* "${WEBUI_DIST}/"
+                elif webui_dist_is_valid "${tmp_extract}"; then
+                    mkdir -p "${WEBUI_DIST}"
+                    cp -r "${tmp_extract}/"* "${WEBUI_DIST}/"
+                else
+                    rm -rf "${tmp_extract}"
+                    continue
+                fi
+                rm -rf "${tmp_extract}"
+                FOUND_WEBUI_DIST="${WEBUI_DIST}"
+                return 0
+            fi
+            rm -rf "${tmp_extract}"
+        fi
+    done
+    return 1
+}
+
 build_soundsync() {
     log "Building SoundSync..."
 
-    # Strategy: use prebuilt binary if found, otherwise compile from source
+    # ----- Server binary -----
+    # Strategy: use prebuilt binary if found, then check install dir, otherwise compile
     if [[ -x "${PREBUILT_BINARY}" ]]; then
         log "Found prebuilt binary at ${PREBUILT_BINARY}"
         mkdir -p "${INSTALL_DIR}"
@@ -163,6 +229,8 @@ build_soundsync() {
         log "Found release binary at ${RELEASE_BINARY}"
         mkdir -p "${INSTALL_DIR}"
         cp "${RELEASE_BINARY}" "${INSTALL_DIR}/soundsync"
+    elif [[ -x "${INSTALL_DIR}/soundsync" ]]; then
+        log "Binary already installed at ${INSTALL_DIR}/soundsync — skipping build"
     else
         log "No prebuilt binary found. Compiling from source..."
         cd "${REPO_DIR}"
@@ -174,19 +242,31 @@ build_soundsync() {
     chmod +x "${INSTALL_DIR}/soundsync"
     log "Binary installed to ${INSTALL_DIR}/soundsync"
 
-    # Build frontend if not already built
-    if [[ ! -d "${WEBUI_DIST}" ]]; then
-        log "Building frontend..."
+    # ----- Frontend (webui) -----
+    # 1) Check all directories for an existing valid build
+    if find_webui_dist; then
+        log "Found existing webui build at ${FOUND_WEBUI_DIST}"
+    # 2) Try extracting from a ZIP archive
+    elif try_extract_webui_zip; then
+        log "Extracted webui from archive to ${FOUND_WEBUI_DIST}"
+    # 3) Fall back to building from source
+    else
+        log "No prebuilt frontend found. Building from source..."
         cd "${REPO_DIR}/webui"
         npm ci
         npm run build
+        if webui_dist_is_valid "${WEBUI_DIST}"; then
+            FOUND_WEBUI_DIST="${WEBUI_DIST}"
+        fi
     fi
 
-    # Copy frontend assets
-    if [[ -d "${WEBUI_DIST}" ]]; then
+    # Copy frontend assets into install directory (skip if already there)
+    if [[ -n "${FOUND_WEBUI_DIST:-}" ]] && [[ "${FOUND_WEBUI_DIST}" != "${INSTALL_DIR}/webui/dist" ]]; then
         mkdir -p "${INSTALL_DIR}/webui"
-        cp -r "${WEBUI_DIST}" "${INSTALL_DIR}/webui/"
+        cp -r "${FOUND_WEBUI_DIST}" "${INSTALL_DIR}/webui/dist"
         log "Frontend installed to ${INSTALL_DIR}/webui/dist"
+    elif webui_dist_is_valid "${INSTALL_DIR}/webui/dist"; then
+        log "Frontend already installed at ${INSTALL_DIR}/webui/dist"
     else
         warn "Frontend build not found. Web UI will not be available."
     fi
