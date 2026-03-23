@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{error, info, warn};
 
 use crate::audio::airplay::{AirPlayCommand, AirPlayManager};
@@ -156,7 +156,7 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Determine webui path (check dist/ first, then webui/dist/)
+    // Determine webui path (check webui/dist/ first, then dist/)
     let webui_path = if std::path::Path::new("webui/dist").exists() {
         "webui/dist"
     } else if std::path::Path::new("dist").exists() {
@@ -165,11 +165,24 @@ async fn main() {
         "webui/dist"
     };
 
+    // Warn if the webui directory is missing or has no index.html
+    let index_path = std::path::Path::new(webui_path).join("index.html");
+    if !index_path.exists() {
+        warn!(
+            "Web UI not found at {}/index.html — the page will be blank. \
+             Run 'npm run build' in webui/ or re-run install.sh.",
+            webui_path
+        );
+    }
+
+    // Serve static files with SPA fallback: unmatched routes get index.html
+    // so that client-side routing works correctly
+    let serve_dir = ServeDir::new(webui_path)
+        .append_index_html_on_directories(true)
+        .fallback(ServeFile::new(index_path));
+
     let app = create_router(app_router)
-        .nest_service(
-            "/",
-            ServeDir::new(webui_path).append_index_html_on_directories(true),
-        )
+        .fallback_service(serve_dir)
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
