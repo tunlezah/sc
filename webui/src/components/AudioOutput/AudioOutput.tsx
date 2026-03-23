@@ -66,11 +66,11 @@ export function AudioOutput({
   const isActive = castActive !== null || airplayActive !== null;
 
   return (
-    <div class="card">
+    <div class="card" style={{ flex: '0 0 auto', maxHeight: '200px' }}>
       <div class="card-header" onClick={() => setCollapsed(!collapsed)}>
         <span class="card-title">
           Audio Output ({totalDevices})
-          {isActive && <span class="badge badge-audio" style={{ marginLeft: '8px' }}>Active</span>}
+          {isActive && <span class="badge badge-audio" style={{ marginLeft: '6px' }}>Active</span>}
           {collapsed ? ' +' : ' -'}
         </span>
       </div>
@@ -108,7 +108,7 @@ export function AudioOutput({
                   Casting to: <strong>{castDevices.find(d => d.id === castActive)?.name || castActive}</strong>
                 </div>
                 <div class="output-volume-row">
-                  <span class="output-volume-label">Volume</span>
+                  <span class="output-volume-label">Vol</span>
                   <input
                     type="range"
                     min="0"
@@ -119,19 +119,12 @@ export function AudioOutput({
                   />
                   <span class="output-volume-value">{castVolume}%</span>
                 </div>
-                <button
-                  class="btn btn-sm btn-danger"
-                  onClick={handleCastDisconnect}
-                >
-                  Disconnect
-                </button>
+                <button class="btn btn-sm btn-danger" onClick={handleCastDisconnect}>Disconnect</button>
               </div>
             )}
 
             {castDevices.length === 0 ? (
-              <div class="empty-state">
-                No Chromecast devices found. Press Scan to discover devices on your network.
-              </div>
+              <div class="empty-state">No Chromecast devices found. Press Scan to discover.</div>
             ) : (
               <div class="device-list">
                 {castDevices.map((device) => (
@@ -139,29 +132,19 @@ export function AudioOutput({
                     <div class="device-info">
                       <div class="device-name">{device.name}</div>
                       <div class="device-details">
-                        <span>{device.address}:{device.port}</span>
                         <span>{device.model}</span>
-                        {castActive === device.id && (
-                          <span class="badge badge-audio">Casting</span>
-                        )}
+                        {castActive === device.id && <span class="badge badge-audio">Casting</span>}
                       </div>
                     </div>
                     <div class="device-actions">
                       {castActive === device.id ? (
-                        <button
-                          class="btn btn-sm btn-secondary"
-                          onClick={handleCastDisconnect}
-                        >
-                          Stop
-                        </button>
+                        <button class="btn btn-sm btn-secondary" onClick={handleCastDisconnect}>Stop</button>
                       ) : (
                         <button
                           class="btn btn-sm btn-primary"
                           onClick={() => handleCastConnect(device.id)}
                           disabled={castActive !== null}
-                        >
-                          Cast
-                        </button>
+                        >Cast</button>
                       )}
                     </div>
                   </div>
@@ -189,7 +172,7 @@ export function AudioOutput({
                   Playing on: <strong>{airplayActive}</strong>
                 </div>
                 <div class="output-volume-row">
-                  <span class="output-volume-label">Volume</span>
+                  <span class="output-volume-label">Vol</span>
                   <input
                     type="range"
                     min="0"
@@ -200,19 +183,12 @@ export function AudioOutput({
                   />
                   <span class="output-volume-value">{airplayVolume}%</span>
                 </div>
-                <button
-                  class="btn btn-sm btn-danger"
-                  onClick={handleAirplayDisconnect}
-                >
-                  Disconnect
-                </button>
+                <button class="btn btn-sm btn-danger" onClick={handleAirplayDisconnect}>Disconnect</button>
               </div>
             )}
 
             {airplayDevices.length === 0 ? (
-              <div class="empty-state">
-                No AirPlay devices found. Press Scan to discover devices on your network.
-              </div>
+              <div class="empty-state">No AirPlay devices found. Press Scan to discover.</div>
             ) : (
               <div class="device-list">
                 {airplayDevices.map((device) => (
@@ -220,29 +196,19 @@ export function AudioOutput({
                     <div class="device-info">
                       <div class="device-name">{device.name}</div>
                       <div class="device-details">
-                        {device.address && <span>{device.address}:{device.port}</span>}
                         <span>{device.model}</span>
-                        {airplayActive === device.name && (
-                          <span class="badge badge-audio">Playing</span>
-                        )}
+                        {airplayActive === device.name && <span class="badge badge-audio">Playing</span>}
                       </div>
                     </div>
                     <div class="device-actions">
                       {airplayActive === device.name ? (
-                        <button
-                          class="btn btn-sm btn-secondary"
-                          onClick={handleAirplayDisconnect}
-                        >
-                          Stop
-                        </button>
+                        <button class="btn btn-sm btn-secondary" onClick={handleAirplayDisconnect}>Stop</button>
                       ) : (
                         <button
                           class="btn btn-sm btn-primary"
                           onClick={() => handleAirplayConnect(device.name)}
                           disabled={airplayActive !== null}
-                        >
-                          Play
-                        </button>
+                        >Play</button>
                       )}
                     </div>
                   </div>

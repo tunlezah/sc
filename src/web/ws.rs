@@ -213,10 +213,11 @@ fn event_to_ws_message(event: &SystemEvent, ws_session_id: &str) -> Option<WsOut
             },
         }),
         SystemEvent::StreamStarted { address, codec: _ } => {
+            // Don't include name here - the frontend will preserve the existing name
             Some(WsOutMessage::DeviceStateChanged {
                 data: DeviceStateData {
                     address: address.clone(),
-                    name: String::new(),
+                    name: String::new(), // Frontend should not overwrite with empty
                     state: crate::bluetooth::device::DeviceState::AudioActive,
                 },
             })

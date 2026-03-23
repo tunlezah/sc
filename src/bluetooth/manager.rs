@@ -78,7 +78,7 @@ impl BluetoothManager {
             }
         };
 
-        // Power on, set alias, set discoverable
+        // Power on, set alias, set discoverable, set pairable
         if let Err(e) = adapter.set_powered(true).await {
             warn!("Failed to power on adapter: {}", e);
         }
@@ -109,60 +109,112 @@ impl BluetoothManager {
             status: BluetoothStatus::Ready,
         });
 
-        // Start device discovery - returns impl Stream<Item = AdapterEvent>
-        let mut discover = match adapter.discover_devices().await {
-            Ok(stream) => Box::pin(stream),
-            Err(e) => {
-                error!("Failed to start discovery: {}", e);
-                self.run_command_loop(&adapter).await;
-                return;
-            }
-        };
-
-        info!("Device discovery started");
-        {
-            let mut app = self.state.state.write().await;
-            app.bluetooth_status = BluetoothStatus::Scanning;
-        }
-        self.state.publish(SystemEvent::BluetoothStatusChanged {
-            status: BluetoothStatus::Scanning,
-        });
+        // Do NOT start discovery automatically - wait for user to click Scan
+        let mut discover: Option<std::pin::Pin<Box<dyn futures::Stream<Item = bluer::AdapterEvent> + Send>>> = None;
 
         // Main event loop
         let poll_interval = constants::DEVICE_PROPS_POLL;
 
         loop {
-            tokio::select! {
-                cmd = self.cmd_rx.recv() => {
-                    match cmd {
-                        Some(cmd) => self.handle_command(&adapter, cmd).await,
-                        None => {
-                            info!("Command channel closed, shutting down BT manager");
-                            break;
+            // Build the select based on whether discovery is active
+            if let Some(ref mut stream) = discover {
+                tokio::select! {
+                    cmd = self.cmd_rx.recv() => {
+                        match cmd {
+                            Some(BluetoothCommand::StartScan) => {
+                                info!("Discovery already active, refreshing status");
+                                let mut app = self.state.state.write().await;
+                                app.bluetooth_status = BluetoothStatus::Scanning;
+                                drop(app);
+                                self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                    status: BluetoothStatus::Scanning,
+                                });
+                            }
+                            Some(BluetoothCommand::StopScan) => {
+                                info!("Stopping Bluetooth discovery");
+                                // Drop the discovery stream to stop BlueZ discovery
+                                discover = None;
+                                let mut app = self.state.state.write().await;
+                                app.bluetooth_status = BluetoothStatus::Ready;
+                                drop(app);
+                                self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                    status: BluetoothStatus::Ready,
+                                });
+                            }
+                            Some(cmd) => self.handle_command(&adapter, cmd).await,
+                            None => {
+                                info!("Command channel closed, shutting down BT manager");
+                                break;
+                            }
                         }
                     }
-                }
 
-                event = discover.next() => {
-                    match event {
-                        Some(evt) => self.handle_adapter_event(&adapter, evt).await,
-                        None => {
-                            warn!("Discovery stream ended");
-                            break;
+                    event = stream.next() => {
+                        match event {
+                            Some(evt) => self.handle_adapter_event(&adapter, evt).await,
+                            None => {
+                                warn!("Discovery stream ended");
+                                discover = None;
+                                let mut app = self.state.state.write().await;
+                                app.bluetooth_status = BluetoothStatus::Ready;
+                                drop(app);
+                                self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                    status: BluetoothStatus::Ready,
+                                });
+                            }
                         }
                     }
-                }
 
-                _ = tokio::time::sleep(poll_interval) => {
-                    self.poll_device_properties(&adapter).await;
+                    _ = tokio::time::sleep(poll_interval) => {
+                        self.poll_device_properties(&adapter).await;
+                    }
+                }
+            } else {
+                tokio::select! {
+                    cmd = self.cmd_rx.recv() => {
+                        match cmd {
+                            Some(BluetoothCommand::StartScan) => {
+                                info!("Starting Bluetooth discovery");
+                                match adapter.discover_devices().await {
+                                    Ok(stream) => {
+                                        discover = Some(Box::pin(stream));
+                                        let mut app = self.state.state.write().await;
+                                        app.bluetooth_status = BluetoothStatus::Scanning;
+                                        drop(app);
+                                        self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                            status: BluetoothStatus::Scanning,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to start discovery: {}", e);
+                                        self.state.publish(SystemEvent::Error {
+                                            message: format!("Discovery failed: {}", e),
+                                        });
+                                    }
+                                }
+                            }
+                            Some(BluetoothCommand::StopScan) => {
+                                // Already stopped, just confirm status
+                                let mut app = self.state.state.write().await;
+                                app.bluetooth_status = BluetoothStatus::Ready;
+                                drop(app);
+                                self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                    status: BluetoothStatus::Ready,
+                                });
+                            }
+                            Some(cmd) => self.handle_command(&adapter, cmd).await,
+                            None => {
+                                info!("Command channel closed, shutting down BT manager");
+                                break;
+                            }
+                        }
+                    }
+
+                    _ = tokio::time::sleep(poll_interval) => {
+                        self.poll_device_properties(&adapter).await;
+                    }
                 }
             }
-        }
-    }
-
-    async fn run_command_loop(&mut self, adapter: &bluer::Adapter) {
-        while let Some(cmd) = self.cmd_rx.recv().await {
-            self.handle_command(adapter, cmd).await;
         }
     }
 
@@ -202,44 +254,54 @@ impl BluetoothManager {
 
     async fn handle_command(&self, adapter: &bluer::Adapter, cmd: BluetoothCommand) {
         match cmd {
-            BluetoothCommand::StartScan => {
-                info!("Starting scan");
-                if let Err(e) = adapter.set_discoverable(true).await {
-                    warn!("Failed to set discoverable: {}", e);
-                }
-                let mut app = self.state.state.write().await;
-                app.bluetooth_status = BluetoothStatus::Scanning;
-                drop(app);
-                self.state.publish(SystemEvent::BluetoothStatusChanged {
-                    status: BluetoothStatus::Scanning,
-                });
-            }
-            BluetoothCommand::StopScan => {
-                info!("Stopping scan");
-                let mut app = self.state.state.write().await;
-                app.bluetooth_status = BluetoothStatus::Ready;
-                drop(app);
-                self.state.publish(SystemEvent::BluetoothStatusChanged {
-                    status: BluetoothStatus::Ready,
-                });
+            BluetoothCommand::StartScan | BluetoothCommand::StopScan => {
+                // Handled in main loop
             }
             BluetoothCommand::Connect { address } => {
                 info!("Connecting to {}", address);
                 if let Ok(addr) = address.parse() {
                     match adapter.device(addr) {
                         Ok(device) => {
+                            // Trust the device to auto-connect profiles
+                            if let Err(e) = device.set_trusted(true).await {
+                                warn!("Failed to trust {}: {}", address, e);
+                            }
                             if let Err(e) = device.connect().await {
                                 error!("Failed to connect to {}: {}", address, e);
                                 self.state.publish(SystemEvent::Error {
                                     message: format!("Connect failed: {}", e),
                                 });
                             } else {
-                                discovery::update_device_state(
-                                    &self.state,
-                                    &address,
-                                    DeviceState::Connected,
-                                )
-                                .await;
+                                // Check if A2DP profile is available
+                                let uuids: Vec<String> = device
+                                    .uuids()
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .map(|set| set.into_iter().map(|u| u.to_string()).collect())
+                                    .unwrap_or_default();
+
+                                let has_a2dp = uuids.iter().any(|u| {
+                                    u.contains("110b") || u.contains("110a") || u.contains("110d")
+                                });
+
+                                if has_a2dp {
+                                    discovery::update_device_state(
+                                        &self.state,
+                                        &address,
+                                        DeviceState::Connected,
+                                    )
+                                    .await;
+                                    info!("Device {} connected with A2DP support", address);
+                                } else {
+                                    discovery::update_device_state(
+                                        &self.state,
+                                        &address,
+                                        DeviceState::Connected,
+                                    )
+                                    .await;
+                                    info!("Device {} connected (no A2DP detected)", address);
+                                }
                             }
                         }
                         Err(e) => {

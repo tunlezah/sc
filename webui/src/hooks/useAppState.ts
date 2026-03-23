@@ -38,7 +38,9 @@ export function useAppState() {
             const devices = [...prev.devices];
             const idx = devices.findIndex((d) => d.address === msg.data.address);
             if (idx >= 0) {
-              devices[idx] = { ...devices[idx], state: msg.data.state, name: msg.data.name };
+              // Only update name if the new name is non-empty (StreamStarted sends empty name)
+              const updatedName = msg.data.name || devices[idx].name;
+              devices[idx] = { ...devices[idx], state: msg.data.state, name: updatedName };
             } else {
               devices.push({
                 address: msg.data.address,

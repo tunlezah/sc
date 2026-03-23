@@ -57,12 +57,27 @@ impl A2dpEndpoint {
 
         // Extract device address from transport path
         // e.g. /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/sep1/fd0
-        let address = crate::bluetooth::constants::address_from_path(&transport_str);
+        let address = crate::bluetooth::constants::address_from_path(&transport_str)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Update device state to AudioActive and set codec
+        {
+            let mut app = self.state_handle.state.write().await;
+            if let Some(device) = app.devices.get_mut(&address) {
+                device.state = crate::bluetooth::device::DeviceState::AudioActive;
+                device.codec = Some(self.codec);
+                app.active_device = Some(address.clone());
+                info!(
+                    "Device {} ({}) is now streaming audio via {:?}",
+                    address, device.name, self.codec
+                );
+            }
+        }
 
         // Emit StreamStarted event
         self.state_handle
             .publish(crate::state::SystemEvent::StreamStarted {
-                address: address.unwrap_or_else(|| "unknown".to_string()),
+                address,
                 codec: self.codec,
             });
     }
@@ -103,10 +118,24 @@ impl A2dpEndpoint {
             *guard = None;
         }
 
-        let address = crate::bluetooth::constants::address_from_path(&transport_str);
+        let address = crate::bluetooth::constants::address_from_path(&transport_str)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Update device state back from AudioActive
+        {
+            let mut app = self.state_handle.state.write().await;
+            if let Some(device) = app.devices.get_mut(&address) {
+                device.state = crate::bluetooth::device::DeviceState::Connected;
+                device.codec = None;
+            }
+            if app.active_device.as_deref() == Some(&address) {
+                app.active_device = None;
+            }
+        }
+
         self.state_handle
             .publish(crate::state::SystemEvent::StreamStopped {
-                address: address.unwrap_or_else(|| "unknown".to_string()),
+                address,
             });
     }
 }
