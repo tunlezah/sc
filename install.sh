@@ -189,11 +189,14 @@ configure_avahi() {
 # 4. Build SoundSync
 # -------------------------------------------------------------------
 
-# Check if a directory contains a valid webui build (index.html required,
-# JS assets optional since dev/flat layouts may not have assets/)
+# Check if a directory contains a valid webui build.
+# A valid build must have index.html AND compiled assets (JS files).
+# This prevents accidentally deploying the unbuilt source index.html
+# which references /src/main.tsx instead of bundled assets.
 webui_dist_is_valid() {
     local dir="$1"
-    [[ -d "${dir}" ]] && [[ -f "${dir}/index.html" ]]
+    [[ -d "${dir}" ]] && [[ -f "${dir}/index.html" ]] && \
+        ls "${dir}"/assets/*.js &>/dev/null 2>&1
 }
 
 # Search all known locations for a valid webui dist.
@@ -205,7 +208,6 @@ find_webui_dist() {
         "${INSTALL_DIR}/webui/dist"       # already installed
         "${REPO_DIR}/webui/dist"          # built in source tree
         "${REPO_DIR}/soundsync-webui"     # standalone webui directory
-        "${REPO_DIR}/webui"               # source webui root (dev layout)
         "${REPO_DIR}/dist"                # alternate flat layout
     )
 
