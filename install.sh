@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SoundSync Installer
 # Installs SoundSync on Debian/Ubuntu/Raspberry Pi OS.
-# Usage: sudo bash install.sh
+# Usage: sudo bash install.sh [--uninstall]
 set -euo pipefail
 
 INSTALL_DIR="/opt/soundsync"
@@ -12,7 +12,8 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="2.0.0"
+VERSION="2.1.0"
+VERSION_FILE="${INSTALL_DIR}/.soundsync-version"
 
 # Colors
 RED='\033[0;31m'
@@ -23,6 +24,43 @@ NC='\033[0m'
 log()    { echo -e "${GREEN}[SoundSync]${NC} $*"; }
 warn()   { echo -e "${YELLOW}[WARNING]${NC} $*"; }
 error()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+
+# -------------------------------------------------------------------
+# Uninstall
+# -------------------------------------------------------------------
+uninstall_soundsync() {
+    log "SoundSync Uninstaller v${VERSION}"
+    log "================================"
+
+    if [[ $EUID -ne 0 ]]; then
+        error "This script must be run as root. Use: sudo bash install.sh --uninstall"
+    fi
+
+    log "Stopping SoundSync service..."
+    systemctl stop soundsync 2>/dev/null || true
+    systemctl disable soundsync 2>/dev/null || true
+
+    log "Removing service file..."
+    rm -f "${SERVICE_FILE}"
+    systemctl daemon-reload
+
+    log "Removing install directory (${INSTALL_DIR})..."
+    rm -rf "${INSTALL_DIR}"
+
+    log "Removing service user..."
+    if id "${SERVICE_USER}" &>/dev/null; then
+        userdel "${SERVICE_USER}" 2>/dev/null || warn "Could not remove user ${SERVICE_USER}"
+    fi
+
+    log ""
+    log "================================"
+    log "SoundSync has been completely uninstalled."
+    log ""
+    log "Note: System dependencies (bluez, pipewire, etc.) were NOT removed."
+    log "      Remove them manually if no longer needed."
+    log ""
+    exit 0
+}
 
 # -------------------------------------------------------------------
 # 1. System detection and conflict check
@@ -151,12 +189,11 @@ configure_avahi() {
 # 4. Build SoundSync
 # -------------------------------------------------------------------
 
-# Check if a directory contains a valid webui build (index.html + JS assets)
+# Check if a directory contains a valid webui build (index.html required,
+# JS assets optional since dev/flat layouts may not have assets/)
 webui_dist_is_valid() {
     local dir="$1"
-    [[ -d "${dir}" ]] \
-        && [[ -f "${dir}/index.html" ]] \
-        && ls "${dir}"/assets/*.js &>/dev/null
+    [[ -d "${dir}" ]] && [[ -f "${dir}/index.html" ]]
 }
 
 # Search all known locations for a valid webui dist.
@@ -167,6 +204,8 @@ find_webui_dist() {
     local candidates=(
         "${INSTALL_DIR}/webui/dist"       # already installed
         "${REPO_DIR}/webui/dist"          # built in source tree
+        "${REPO_DIR}/soundsync-webui"     # standalone webui directory
+        "${REPO_DIR}/webui"               # source webui root (dev layout)
         "${REPO_DIR}/dist"                # alternate flat layout
     )
 
@@ -217,6 +256,14 @@ try_extract_webui_zip() {
 
 build_soundsync() {
     log "Building SoundSync..."
+
+    # ----- Stop running service before overwriting binary (avoids "Text file busy") -----
+    SERVICE_WAS_RUNNING=false
+    if systemctl is-active --quiet soundsync 2>/dev/null; then
+        log "Stopping running SoundSync service before upgrade..."
+        systemctl stop soundsync
+        SERVICE_WAS_RUNNING=true
+    fi
 
     # ----- Server binary -----
     # Strategy: use prebuilt binary if found, then check install dir, otherwise compile
@@ -330,11 +377,24 @@ setup_xdg() {
 # Main
 # -------------------------------------------------------------------
 main() {
+    # Handle --uninstall flag
+    if [[ "${1:-}" == "--uninstall" ]]; then
+        uninstall_soundsync
+    fi
+
     log "SoundSync Installer v${VERSION}"
     log "================================"
 
     if [[ $EUID -ne 0 ]]; then
         error "This script must be run as root. Use: sudo bash install.sh"
+    fi
+
+    # Detect upgrade
+    if [[ -f "${VERSION_FILE}" ]]; then
+        local prev_version
+        prev_version="$(cat "${VERSION_FILE}")"
+        log "Existing installation detected: v${prev_version}"
+        log "Upgrading to: v${VERSION}"
     fi
 
     detect_system
@@ -345,9 +405,18 @@ main() {
     create_service
     setup_xdg
 
+    # Write version file
+    echo "${VERSION}" > "${VERSION_FILE}"
+
+    # Restart service if it was running before upgrade
+    if [[ "${SERVICE_WAS_RUNNING:-false}" == "true" ]]; then
+        log "Restarting SoundSync service..."
+        systemctl start soundsync || warn "Failed to restart SoundSync service"
+    fi
+
     log ""
     log "================================"
-    log "SoundSync installed successfully!"
+    log "SoundSync v${VERSION} installed successfully!"
     log ""
     log "Start the service:"
     log "  sudo systemctl start soundsync"
@@ -355,6 +424,9 @@ main() {
     log ""
     log "Check status:"
     log "  sudo systemctl status soundsync"
+    log ""
+    log "Uninstall:"
+    log "  sudo bash install.sh --uninstall"
     log ""
     log "Web UI available at:"
     log "  http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):8080"
