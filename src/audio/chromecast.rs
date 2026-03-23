@@ -154,7 +154,7 @@ impl ChromecastManager {
                                 } else {
                                     // Fall back to any address (including IPv6)
                                     let all = info.get_addresses();
-                                    all.into_iter().next().map(|addr| addr.to_string())
+                                    all.iter().next().map(|addr| addr.to_string())
                                 }
                             };
                             if let Some(addr) = addr_str {
