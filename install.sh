@@ -196,7 +196,7 @@ configure_avahi() {
 webui_dist_is_valid() {
     local dir="$1"
     [[ -d "${dir}" ]] && [[ -f "${dir}/index.html" ]] && \
-        ls "${dir}"/assets/*.js &>/dev/null 2>&1
+        find "${dir}" -maxdepth 2 -name '*.js' -print -quit 2>/dev/null | grep -q .
 }
 
 # Search all known locations for a valid webui dist.
@@ -308,10 +308,12 @@ build_soundsync() {
         fi
     fi
 
-    # Copy frontend assets into install directory (skip if already there)
+    # Copy frontend assets into install directory.
+    # Always replace the existing webui/dist to ensure a clean upgrade.
     if [[ -n "${FOUND_WEBUI_DIST:-}" ]] && [[ "${FOUND_WEBUI_DIST}" != "${INSTALL_DIR}/webui/dist" ]]; then
-        mkdir -p "${INSTALL_DIR}/webui"
-        cp -r "${FOUND_WEBUI_DIST}" "${INSTALL_DIR}/webui/dist"
+        rm -rf "${INSTALL_DIR}/webui/dist"
+        mkdir -p "${INSTALL_DIR}/webui/dist"
+        cp -r "${FOUND_WEBUI_DIST}/"* "${INSTALL_DIR}/webui/dist/"
         log "Frontend installed to ${INSTALL_DIR}/webui/dist"
     elif webui_dist_is_valid "${INSTALL_DIR}/webui/dist"; then
         log "Frontend already installed at ${INSTALL_DIR}/webui/dist"
