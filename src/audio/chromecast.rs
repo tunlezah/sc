@@ -146,8 +146,17 @@ impl ChromecastManager {
                 {
                     Ok(Ok(Ok(event))) => match event {
                         ServiceEvent::ServiceResolved(info) => {
-                            let addresses_v4 = info.get_addresses_v4();
-                            if let Some(addr) = addresses_v4.into_iter().next() {
+                            // Try IPv4 first, then fall back to IPv6
+                            let addr_str = {
+                                let v4 = info.get_addresses_v4();
+                                if let Some(addr) = v4.into_iter().next() {
+                                    Some(addr.to_string())
+                                } else {
+                                    let v6 = info.get_addresses_v6();
+                                    v6.into_iter().next().map(|addr| addr.to_string())
+                                }
+                            };
+                            if let Some(addr) = addr_str {
                                 let device_name = info
                                     .get_property_val_str("fn")
                                     .unwrap_or_else(|| info.get_fullname())

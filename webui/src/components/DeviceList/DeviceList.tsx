@@ -43,10 +43,10 @@ export function DeviceList({ devices, activeDevice: _activeDevice, status }: Dev
   };
 
   return (
-    <div class="card">
+    <div class="card" style={{ flex: '1 1 0', minHeight: 0 }}>
       <div class="card-header" onClick={() => setCollapsed(!collapsed)}>
         <span class="card-title">
-          Devices ({devices.length})
+          Bluetooth Devices ({devices.length})
           {collapsed ? ' +' : ' -'}
         </span>
         <button class="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); handleScan(); }}>

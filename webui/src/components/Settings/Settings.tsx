@@ -6,7 +6,6 @@ interface SettingsProps {
 }
 
 export function Settings({ deviceName }: SettingsProps) {
-  const [collapsed, setCollapsed] = useState(true);
   const [name, setName] = useState(deviceName);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -30,41 +29,25 @@ export function Settings({ deviceName }: SettingsProps) {
   };
 
   return (
-    <div class="card">
-      <div class="card-header" onClick={() => setCollapsed(!collapsed)}>
-        <span class="card-title">
-          Settings {collapsed ? '+' : '-'}
-        </span>
-      </div>
-      <div class={`card-content ${collapsed ? 'collapsed' : ''}`}>
-        <div class="settings-field">
-          <label class="settings-label" for="device-name">
-            A2DP Sink Name
-          </label>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-            The Bluetooth name other devices see when pairing.
-          </div>
-          <div class="settings-input-row">
-            <input
-              id="device-name"
-              class="settings-input"
-              type="text"
-              value={name}
-              onInput={(e) => setName((e.target as HTMLInputElement).value)}
-              onKeyDown={handleKeyDown}
-              placeholder="SoundSync"
-              maxLength={64}
-            />
-            <button
-              class={`btn btn-primary btn-sm`}
-              onClick={handleSave}
-              disabled={!isDirty || !name.trim() || saving}
-            >
-              {saving ? 'Saving...' : saved ? 'Saved' : 'Apply'}
-            </button>
-          </div>
-        </div>
-      </div>
+    <div class="settings-row">
+      <label class="settings-label" for="device-name">Device Name</label>
+      <input
+        id="device-name"
+        class="settings-input"
+        type="text"
+        value={name}
+        onInput={(e) => setName((e.target as HTMLInputElement).value)}
+        onKeyDown={handleKeyDown}
+        placeholder="SoundSync"
+        maxLength={64}
+      />
+      <button
+        class="btn btn-primary btn-sm"
+        onClick={handleSave}
+        disabled={!isDirty || !name.trim() || saving}
+      >
+        {saving ? '...' : saved ? 'Saved' : 'Apply'}
+      </button>
     </div>
   );
 }

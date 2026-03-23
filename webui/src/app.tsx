@@ -5,9 +5,7 @@ import { DeviceList } from './components/DeviceList/DeviceList';
 import { EQControls } from './components/EQControls/EQControls';
 import { SpectrumVisualizer } from './components/SpectrumVisualizer/SpectrumVisualizer';
 import { MediaControls } from './components/MediaControls/MediaControls';
-import { AudioPlayer } from './components/AudioPlayer/AudioPlayer';
 import { AudioOutput } from './components/AudioOutput/AudioOutput';
-import { LineIn } from './components/LineIn/LineIn';
 import { Settings } from './components/Settings/Settings';
 
 export function App() {
@@ -15,39 +13,46 @@ export function App() {
   const [dark, toggleDark] = useDarkMode();
 
   return (
-    <div>
-      <Header dark={dark} onToggleDark={toggleDark} status={state.status} />
-
-      <SpectrumVisualizer bands={spectrum} dark={dark} />
-
-      <MediaControls
-        trackInfo={state.track_info}
-        playbackStatus={state.playback_status}
-      />
-
-      <AudioPlayer ws={ws} />
-
-      <DeviceList
-        devices={state.devices}
-        activeDevice={state.active_device}
+    <div class="app-container">
+      <Header
+        dark={dark}
+        onToggleDark={toggleDark}
         status={state.status}
+        lineInActive={state.line_in_active}
+        lineInAvailable={state.line_in_available}
       />
 
-      <AudioOutput
-        castDevices={state.cast_devices}
-        castActive={state.cast_active}
-        airplayDevices={state.airplay_devices}
-        airplayActive={state.airplay_active}
-      />
+      <div class="left-column">
+        <SpectrumVisualizer bands={spectrum} dark={dark} />
 
-      <EQControls
-        bands={state.eq.bands}
-        enabled={state.eq.enabled}
-      />
+        <MediaControls
+          trackInfo={state.track_info}
+          playbackStatus={state.playback_status}
+          ws={ws}
+        />
 
-      <LineIn active={state.line_in_active} available={state.line_in_available} />
+        <EQControls
+          bands={state.eq.bands}
+          enabled={state.eq.enabled}
+        />
+      </div>
 
-      <Settings deviceName={state.device_name} />
+      <div class="right-column">
+        <DeviceList
+          devices={state.devices}
+          activeDevice={state.active_device}
+          status={state.status}
+        />
+
+        <AudioOutput
+          castDevices={state.cast_devices}
+          castActive={state.cast_active}
+          airplayDevices={state.airplay_devices}
+          airplayActive={state.airplay_active}
+        />
+
+        <Settings deviceName={state.device_name} />
+      </div>
     </div>
   );
 }
