@@ -110,7 +110,9 @@ impl BluetoothManager {
         });
 
         // Do NOT start discovery automatically - wait for user to click Scan
-        let mut discover: Option<std::pin::Pin<Box<dyn futures::Stream<Item = bluer::AdapterEvent> + Send>>> = None;
+        let mut discover: Option<
+            std::pin::Pin<Box<dyn futures::Stream<Item = bluer::AdapterEvent> + Send>>,
+        > = None;
 
         // Main event loop
         let poll_interval = constants::DEVICE_PROPS_POLL;
