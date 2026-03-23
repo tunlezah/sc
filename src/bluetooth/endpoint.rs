@@ -66,10 +66,11 @@ impl A2dpEndpoint {
             if let Some(device) = app.devices.get_mut(&address) {
                 device.state = crate::bluetooth::device::DeviceState::AudioActive;
                 device.codec = Some(self.codec);
+                let dev_name = device.name.clone();
                 app.active_device = Some(address.clone());
                 info!(
                     "Device {} ({}) is now streaming audio via {:?}",
-                    address, device.name, self.codec
+                    address, dev_name, self.codec
                 );
             }
         }

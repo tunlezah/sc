@@ -146,14 +146,17 @@ impl ChromecastManager {
                 {
                     Ok(Ok(Ok(event))) => match event {
                         ServiceEvent::ServiceResolved(info) => {
-                            // Try IPv4 first, then fall back to IPv6
-                            let addr_str = {
+                            // Prefer IPv4, fall back to any available address
+                            let addr_str: Option<String> = {
                                 let v4 = info.get_addresses_v4();
                                 if let Some(addr) = v4.into_iter().next() {
                                     Some(addr.to_string())
                                 } else {
-                                    let v6 = info.get_addresses_v6();
-                                    v6.into_iter().next().map(|addr| addr.to_string())
+                                    // Fall back to any address (including IPv6)
+                                    let all = info.get_addresses();
+                                    all.into_iter()
+                                        .next()
+                                        .map(|addr| addr.to_string())
                                 }
                             };
                             if let Some(addr) = addr_str {
@@ -168,12 +171,14 @@ impl ChromecastManager {
                                 let device_id = info
                                     .get_property_val_str("id")
                                     .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("{}:{}", addr, info.get_port()));
+                                    .unwrap_or_else(|| {
+                                        format!("{}:{}", addr, info.get_port())
+                                    });
 
                                 let device_info = CastDeviceInfo {
                                     id: device_id.clone(),
                                     name: device_name.clone(),
-                                    address: addr.to_string(),
+                                    address: addr.clone(),
                                     port: info.get_port(),
                                     model: model.clone(),
                                 };
