@@ -205,10 +205,10 @@ find_webui_dist() {
     FOUND_WEBUI_DIST=""
 
     local candidates=(
-        "${INSTALL_DIR}/webui/dist"       # already installed
+        "${REPO_DIR}/soundsync-webui"     # CI artifact download (checked first)
         "${REPO_DIR}/webui/dist"          # built in source tree
-        "${REPO_DIR}/soundsync-webui"     # standalone webui directory
         "${REPO_DIR}/dist"                # alternate flat layout
+        "${INSTALL_DIR}/webui/dist"       # already installed (lowest priority)
     )
 
     for dir in "${candidates[@]}"; do
