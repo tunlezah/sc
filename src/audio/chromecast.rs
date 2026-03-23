@@ -154,9 +154,7 @@ impl ChromecastManager {
                                 } else {
                                     // Fall back to any address (including IPv6)
                                     let all = info.get_addresses();
-                                    all.into_iter()
-                                        .next()
-                                        .map(|addr| addr.to_string())
+                                    all.into_iter().next().map(|addr| addr.to_string())
                                 }
                             };
                             if let Some(addr) = addr_str {
@@ -171,9 +169,7 @@ impl ChromecastManager {
                                 let device_id = info
                                     .get_property_val_str("id")
                                     .map(|s| s.to_string())
-                                    .unwrap_or_else(|| {
-                                        format!("{}:{}", addr, info.get_port())
-                                    });
+                                    .unwrap_or_else(|| format!("{}:{}", addr, info.get_port()));
 
                                 let device_info = CastDeviceInfo {
                                     id: device_id.clone(),
