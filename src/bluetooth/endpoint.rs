@@ -134,9 +134,7 @@ impl A2dpEndpoint {
         }
 
         self.state_handle
-            .publish(crate::state::SystemEvent::StreamStopped {
-                address,
-            });
+            .publish(crate::state::SystemEvent::StreamStopped { address });
     }
 }
 
