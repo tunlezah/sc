@@ -352,7 +352,10 @@ async fn discover_via_mdns_sd(
 
                         info!(
                             "Discovered Chromecast: {} ({}) at {}:{}",
-                            device_name, model, addr, info.get_port()
+                            device_name,
+                            model,
+                            addr,
+                            info.get_port()
                         );
 
                         let mut devs = devices.blocking_lock();

@@ -68,7 +68,6 @@ export function AudioOutput({
     ['connected', 'profile_negotiated', 'pipewire_source_ready', 'audio_active'].includes(d.state)
   );
   const btStreaming = devices.filter((d) => d.state === 'audio_active');
-  const totalDevices = castDevices.length + airplayDevices.length;
   const isActive = castActive !== null || airplayActive !== null || btStreaming.length > 0;
 
   return (
