@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
 use crate::bluetooth::agent;
@@ -22,11 +22,22 @@ pub enum BluetoothCommand {
 pub struct BluetoothManager {
     state: AppStateHandle,
     cmd_rx: mpsc::Receiver<BluetoothCommand>,
+    /// Sends the D-Bus connection back once adapter setup is complete,
+    /// so that endpoints can be registered on the same connection.
+    conn_tx: Option<oneshot::Sender<zbus::Connection>>,
 }
 
 impl BluetoothManager {
-    pub fn new(state: AppStateHandle, cmd_rx: mpsc::Receiver<BluetoothCommand>) -> Self {
-        Self { state, cmd_rx }
+    pub fn new(
+        state: AppStateHandle,
+        cmd_rx: mpsc::Receiver<BluetoothCommand>,
+        conn_tx: oneshot::Sender<zbus::Connection>,
+    ) -> Self {
+        Self {
+            state,
+            cmd_rx,
+            conn_tx: Some(conn_tx),
+        }
     }
 
     /// Main run loop for the Bluetooth manager.
@@ -88,6 +99,10 @@ impl BluetoothManager {
             warn!("Failed to set alias: {}", e);
         }
 
+        if let Err(e) = adapter.set_discoverable_timeout(0).await {
+            warn!("Failed to set discoverable timeout: {}", e);
+        }
+
         if let Err(e) = adapter.set_discoverable(true).await {
             warn!("Failed to set discoverable: {}", e);
         }
@@ -108,6 +123,12 @@ impl BluetoothManager {
         self.state.publish(SystemEvent::BluetoothStatusChanged {
             status: BluetoothStatus::Ready,
         });
+
+        // Send the D-Bus connection to main so endpoints are registered
+        // on the same connection (same D-Bus unique name as the agent).
+        if let Some(tx) = self.conn_tx.take() {
+            let _ = tx.send(connection.clone());
+        }
 
         // Do NOT start discovery automatically - wait for user to click Scan
         let mut discover: Option<

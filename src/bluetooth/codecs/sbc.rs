@@ -23,7 +23,9 @@ pub fn capabilities() -> Vec<u8> {
 #[allow(dead_code)]
 pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     if remote.len() < 4 {
-        return capabilities();
+        // Return a single valid default: 44.1kHz, Joint Stereo, 16 blocks,
+        // 8 subbands, Loudness allocation, bitpool 2-53.
+        return vec![0x21, 0x15, 2, 53];
     }
 
     let freq_channel = remote[0];

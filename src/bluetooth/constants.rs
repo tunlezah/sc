@@ -21,8 +21,8 @@ pub const AVRCP_POLL_IDLE: Duration = Duration::from_millis(2000);
 #[allow(dead_code)]
 pub fn address_from_path(path: &str) -> Option<String> {
     path.split('/')
-        .next_back()
-        .and_then(|last| last.strip_prefix("dev_"))
+        .find(|seg| seg.starts_with("dev_"))
+        .and_then(|seg| seg.strip_prefix("dev_"))
         .map(|s| s.replace('_', ":"))
 }
 
@@ -45,6 +45,19 @@ mod tests {
         );
         assert_eq!(
             address_from_path("/org/bluez/hci0/dev_11_22_33_44_55_66"),
+            Some("11:22:33:44:55:66".to_string())
+        );
+    }
+
+    #[test]
+    fn test_address_from_transport_path() {
+        // Transport paths have extra segments after the device address
+        assert_eq!(
+            address_from_path("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/sep1/fd0"),
+            Some("AA:BB:CC:DD:EE:FF".to_string())
+        );
+        assert_eq!(
+            address_from_path("/org/bluez/hci0/dev_11_22_33_44_55_66/sep2/fd1"),
             Some("11:22:33:44:55:66".to_string())
         );
     }

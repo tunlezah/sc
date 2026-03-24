@@ -105,33 +105,46 @@ async fn main() {
         manager.run(airplay_cmd_rx).await;
     });
 
-    // Start Bluetooth manager
+    // Start Bluetooth manager and register A2DP endpoints on the same D-Bus connection.
+    // A oneshot channel passes the connection back after adapter setup completes,
+    // ensuring endpoints register only after the adapter is powered on and the agent
+    // is registered, and that both share the same D-Bus unique name.
+    let (conn_tx, conn_rx) = tokio::sync::oneshot::channel::<zbus::Connection>();
     let bt_state = state.clone();
-    let bt_manager = BluetoothManager::new(bt_state, bt_cmd_rx);
+    let adapter_name = state.state.read().await.config.adapter.clone();
+    let bt_manager = BluetoothManager::new(bt_state, bt_cmd_rx, conn_tx);
     tokio::spawn(async move {
         bt_manager.run().await;
     });
 
-    // Register A2DP endpoints for codec negotiation
+    // Register A2DP endpoints once the Bluetooth manager is ready.
     let endpoint_state = state.clone();
+    let endpoint_adapter = adapter_name.clone();
     tokio::spawn(async move {
-        match zbus::Connection::system().await {
+        match conn_rx.await {
             Ok(connection) => {
-                if let Err(e) =
-                    bluetooth::endpoint::register_endpoints(&connection, endpoint_state).await
+                if let Err(e) = bluetooth::endpoint::register_endpoints(
+                    &connection,
+                    endpoint_state,
+                    &endpoint_adapter,
+                )
+                .await
                 {
                     warn!("Failed to register A2DP endpoints: {}", e);
                     info!("A2DP codec negotiation will not be available");
                 }
+                // Keep the connection (and its D-Bus objects) alive for the
+                // lifetime of the application so BlueZ can call our endpoints.
+                futures::future::pending::<()>().await;
             }
-            Err(e) => {
-                warn!("Failed to connect to D-Bus for A2DP endpoints: {}", e);
+            Err(_) => {
+                warn!("Bluetooth manager shut down before sending D-Bus connection");
             }
         }
     });
 
     // Start AVRCP monitor
-    let avrcp_monitor = AvrcpMonitor::new(state.clone(), avrcp_cmd_rx);
+    let avrcp_monitor = AvrcpMonitor::new(state.clone(), avrcp_cmd_rx, adapter_name.clone());
     tokio::spawn(async move {
         avrcp_monitor.run().await;
     });
