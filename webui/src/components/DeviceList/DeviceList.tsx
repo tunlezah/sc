@@ -43,7 +43,7 @@ export function DeviceList({ devices, activeDevice: _activeDevice, status }: Dev
   };
 
   return (
-    <div class="card" style={{ flex: '0 0 auto', maxHeight: '35%', minHeight: 0 }}>
+    <div class="card" style={{ flex: '1 1 50%', minHeight: 0 }}>
       <div class="card-header" onClick={() => setCollapsed(!collapsed)}>
         <span class="card-title">
           Bluetooth Devices ({devices.length})

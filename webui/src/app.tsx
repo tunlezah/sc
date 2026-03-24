@@ -49,7 +49,6 @@ export function App() {
           castActive={state.cast_active}
           airplayDevices={state.airplay_devices}
           airplayActive={state.airplay_active}
-          devices={state.devices}
         />
 
         <Settings deviceName={state.device_name} />
