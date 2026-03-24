@@ -122,9 +122,13 @@ impl AvrcpMonitor {
 
     async fn get_player_path(&self) -> Option<String> {
         let app = self.state.state.read().await;
-        app.active_device
-            .as_ref()
-            .map(|addr| format!("/org/bluez/{}/dev_{}/player0", self.adapter_name, addr.replace(':', "_")))
+        app.active_device.as_ref().map(|addr| {
+            format!(
+                "/org/bluez/{}/dev_{}/player0",
+                self.adapter_name,
+                addr.replace(':', "_")
+            )
+        })
     }
 
     async fn poll_media_player(&mut self, connection: &zbus::Connection) {
