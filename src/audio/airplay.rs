@@ -523,7 +523,7 @@ fn decode_avahi_escapes(s: &str) -> String {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            // Try to read 3 decimal digits
+            // Try to read 3 octal digits (Avahi uses octal escapes)
             let mut digits = String::new();
             let mut pending = Vec::new();
             for _ in 0..3 {
@@ -539,7 +539,7 @@ fn decode_avahi_escapes(s: &str) -> String {
                 }
             }
             if digits.len() == 3 {
-                if let Ok(code) = digits.parse::<u8>() {
+                if let Ok(code) = u8::from_str_radix(&digits, 8) {
                     result.push(code as char);
                 } else {
                     // Not a valid u8, emit literally
