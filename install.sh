@@ -144,7 +144,7 @@ configure_bluetooth() {
 
     cat > "${BT_CONF}" << 'BTCONF'
 [General]
-Class = 0x24043C
+Class = 0x240414
 Name = SoundSync
 DiscoverableTimeout = 0
 PairableTimeout = 0
