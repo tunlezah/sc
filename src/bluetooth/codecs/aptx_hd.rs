@@ -17,7 +17,8 @@ pub fn capabilities() -> Vec<u8> {
 #[allow(dead_code)]
 pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     if remote.len() < 6 {
-        return capabilities();
+        // Return a single valid default: Qualcomm HD vendor, aptX HD codec, 44100 Hz, Stereo
+        return vec![0xD7, 0x00, 0x24, 0x00, 0x20, 0x02, 0x00, 0x00, 0x00, 0x00];
     }
     let freq = if remote[4] & 0x20 != 0 {
         0x20 // 44100

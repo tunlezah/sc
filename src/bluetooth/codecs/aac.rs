@@ -19,7 +19,8 @@ pub fn capabilities() -> Vec<u8> {
 #[allow(dead_code)]
 pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     if remote.len() < 6 {
-        return capabilities();
+        // Return a single valid default: AAC LC, 44100 Hz, Stereo, VBR, 256kbps
+        return vec![0x80, 0x01, 0x04, 0x83, 0xE8, 0x00];
     }
     // Select AAC LC, 44100 Hz, Stereo, VBR, 256kbps
     vec![
