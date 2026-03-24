@@ -726,6 +726,42 @@ async fn remove_pw_link(link_id: &str) {
     }
 }
 
+/// Monitor an AirPlay session to detect disconnection.
+async fn run_airplay_monitor(sink_name: String, state: AppStateHandle, device_name: String) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+
+    loop {
+        interval.tick().await;
+
+        // Verify the RAOP sink still exists in PipeWire
+        let result = Command::new("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+            .await;
+
+        match result {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if !stdout.contains(&sink_name) {
+                    info!("AirPlay sink {} disappeared, session ended", sink_name);
+                    state.publish(SystemEvent::AirPlaySessionStopped {
+                        device_name: device_name.clone(),
+                    });
+                    {
+                        let mut app = state.state.write().await;
+                        app.airplay_active = None;
+                    }
+                    break;
+                }
+            }
+            _ => {
+                // pactl failed, but don't terminate the session for transient errors
+                debug!("AirPlay monitor: pactl check failed");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,41 +825,5 @@ mod tests {
         assert_eq!(decoded, "CCCCAC98497B@Lounge Room Stereo#");
         let friendly = extract_raop_friendly_name(&decoded);
         assert_eq!(friendly, "Lounge Room Stereo");
-    }
-}
-
-/// Monitor an AirPlay session to detect disconnection.
-async fn run_airplay_monitor(sink_name: String, state: AppStateHandle, device_name: String) {
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
-
-    loop {
-        interval.tick().await;
-
-        // Verify the RAOP sink still exists in PipeWire
-        let result = Command::new("pactl")
-            .args(["list", "short", "sinks"])
-            .output()
-            .await;
-
-        match result {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if !stdout.contains(&sink_name) {
-                    info!("AirPlay sink {} disappeared, session ended", sink_name);
-                    state.publish(SystemEvent::AirPlaySessionStopped {
-                        device_name: device_name.clone(),
-                    });
-                    {
-                        let mut app = state.state.write().await;
-                        app.airplay_active = None;
-                    }
-                    break;
-                }
-            }
-            _ => {
-                // pactl failed, but don't terminate the session for transient errors
-                debug!("AirPlay monitor: pactl check failed");
-            }
-        }
     }
 }
