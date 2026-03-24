@@ -180,7 +180,7 @@ pub async fn register_endpoints(
         let mut props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
         props.insert(
             "UUID",
-            zvariant::Value::from(crate::bluetooth::constants::A2DP_SOURCE_UUID),
+            zvariant::Value::from(crate::bluetooth::constants::A2DP_SINK_UUID),
         );
         props.insert("Codec", zvariant::Value::from(codec.codec_id()));
         props.insert("Capabilities", zvariant::Value::from(codec.capabilities()));
