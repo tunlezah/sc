@@ -94,6 +94,44 @@ impl Config {
 
         config
     }
+
+    /// Save the current configuration to the user config file
+    /// (~/.config/soundsync/config.toml).
+    pub fn save_to_user_config(&self) -> Result<(), String> {
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("soundsync");
+
+        // Ensure config directory exists
+        if let Err(e) = std::fs::create_dir_all(&config_dir) {
+            return Err(format!(
+                "Failed to create config directory {}: {}",
+                config_dir.display(),
+                e
+            ));
+        }
+
+        let config_path = config_dir.join("config.toml");
+
+        // Build TOML content manually to preserve only changed fields
+        // and avoid overwriting system config values
+        let content = format!(
+            "# SoundSync user configuration\ndevice_name = \"{}\"\n",
+            self.device_name.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+
+        match std::fs::write(&config_path, content) {
+            Ok(()) => {
+                tracing::info!("Saved config to {}", config_path.display());
+                Ok(())
+            }
+            Err(e) => Err(format!(
+                "Failed to write config {}: {}",
+                config_path.display(),
+                e
+            )),
+        }
+    }
 }
 
 #[cfg(test)]

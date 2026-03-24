@@ -8,6 +8,7 @@ use rust_cast::channels::media::{Media, StreamType};
 use rust_cast::channels::receiver::CastDeviceApp;
 use rust_cast::{CastDevice, ChannelMessage};
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -103,131 +104,16 @@ impl ChromecastManager {
         let devices = self.discovered_devices.clone();
         let state = self.state.clone();
 
-        // Run discovery in a blocking task since mdns-sd uses synchronous APIs
+        // Run discovery: try mdns-sd first, fall back to avahi-browse
         tokio::task::spawn(async move {
-            let mdns = match ServiceDaemon::new() {
-                Ok(d) => d,
-                Err(e) => {
-                    error!("Failed to create mDNS daemon: {}", e);
-                    state.publish(SystemEvent::CastError {
-                        message: format!("mDNS initialization failed: {}", e),
-                    });
-                    return;
-                }
-            };
+            let found_via_mdns = discover_via_mdns_sd(&devices, &state).await;
 
-            let receiver = match mdns.browse(MDNS_SERVICE_TYPE) {
-                Ok(r) => r,
-                Err(e) => {
-                    error!("Failed to browse mDNS: {}", e);
-                    state.publish(SystemEvent::CastError {
-                        message: format!("mDNS browse failed: {}", e),
-                    });
-                    return;
-                }
-            };
-
-            let deadline = tokio::time::Instant::now() + DISCOVERY_TIMEOUT;
-
-            loop {
-                let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if timeout.is_zero() {
-                    break;
-                }
-
-                match tokio::time::timeout(
-                    timeout,
-                    tokio::task::spawn_blocking({
-                        let receiver = receiver.clone();
-                        move || receiver.recv_timeout(Duration::from_secs(2))
-                    }),
-                )
-                .await
-                {
-                    Ok(Ok(Ok(event))) => match event {
-                        ServiceEvent::ServiceResolved(info) => {
-                            // Prefer IPv4, fall back to any available address
-                            let addr_str: Option<String> = {
-                                let v4 = info.get_addresses_v4();
-                                if let Some(addr) = v4.into_iter().next() {
-                                    Some(addr.to_string())
-                                } else {
-                                    // Fall back to any address (including IPv6)
-                                    let all = info.get_addresses();
-                                    all.iter().next().map(|addr| addr.to_string())
-                                }
-                            };
-                            if let Some(addr) = addr_str {
-                                let device_name = info
-                                    .get_property_val_str("fn")
-                                    .unwrap_or_else(|| info.get_fullname())
-                                    .to_string();
-                                let model = info
-                                    .get_property_val_str("md")
-                                    .unwrap_or("Chromecast")
-                                    .to_string();
-                                let device_id = info
-                                    .get_property_val_str("id")
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("{}:{}", addr, info.get_port()));
-
-                                let device_info = CastDeviceInfo {
-                                    id: device_id.clone(),
-                                    name: device_name.clone(),
-                                    address: addr.clone(),
-                                    port: info.get_port(),
-                                    model: model.clone(),
-                                };
-
-                                info!(
-                                    "Discovered Chromecast: {} ({}) at {}:{}",
-                                    device_name,
-                                    model,
-                                    addr,
-                                    info.get_port()
-                                );
-
-                                let mut devs = devices.blocking_lock();
-                                devs.insert(device_id.clone(), device_info.clone());
-                                drop(devs);
-
-                                state.publish(SystemEvent::CastDeviceDiscovered {
-                                    device: device_info,
-                                });
-                            }
-                        }
-                        ServiceEvent::ServiceRemoved(_type, fullname) => {
-                            let mut devs = devices.blocking_lock();
-                            // Find and remove device by matching fullname
-                            let removed_id: Option<String> = devs
-                                .iter()
-                                .find(|(_, d)| {
-                                    fullname.contains(&d.name) || fullname.contains(&d.id)
-                                })
-                                .map(|(id, _)| id.clone());
-                            if let Some(id) = removed_id {
-                                devs.remove(&id);
-                                drop(devs);
-                                state.publish(SystemEvent::CastDeviceRemoved { device_id: id });
-                            }
-                        }
-                        _ => {}
-                    },
-                    Ok(Ok(Err(_))) => {
-                        // Timeout on recv, continue
-                    }
-                    Ok(Err(e)) => {
-                        warn!("mDNS discovery task error: {}", e);
-                        break;
-                    }
-                    Err(_) => {
-                        // Overall timeout reached
-                        break;
-                    }
-                }
+            // If mdns-sd found nothing, try avahi-browse as fallback
+            if !found_via_mdns {
+                info!("mdns-sd found no Chromecast devices, trying avahi-browse fallback");
+                discover_cast_via_avahi(&devices, &state).await;
             }
 
-            let _ = mdns.shutdown();
             info!("Chromecast discovery completed");
         });
     }
@@ -388,6 +274,239 @@ impl ChromecastManager {
             }
         }
     }
+}
+
+/// Discover Chromecast devices using the mdns-sd library.
+/// Returns true if at least one device was found.
+async fn discover_via_mdns_sd(
+    devices: &Arc<Mutex<HashMap<String, CastDeviceInfo>>>,
+    state: &AppStateHandle,
+) -> bool {
+    let mdns = match ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Failed to create mDNS daemon: {}", e);
+            return false;
+        }
+    };
+
+    let receiver = match mdns.browse(MDNS_SERVICE_TYPE) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to browse mDNS: {}", e);
+            let _ = mdns.shutdown();
+            return false;
+        }
+    };
+
+    let deadline = tokio::time::Instant::now() + DISCOVERY_TIMEOUT;
+    let mut found = false;
+
+    loop {
+        let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if timeout.is_zero() {
+            break;
+        }
+
+        match tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking({
+                let receiver = receiver.clone();
+                move || receiver.recv_timeout(Duration::from_secs(2))
+            }),
+        )
+        .await
+        {
+            Ok(Ok(Ok(event))) => match event {
+                ServiceEvent::ServiceResolved(info) => {
+                    let addr_str: Option<String> = {
+                        let v4 = info.get_addresses_v4();
+                        if let Some(addr) = v4.into_iter().next() {
+                            Some(addr.to_string())
+                        } else {
+                            let all = info.get_addresses();
+                            all.iter().next().map(|addr| addr.to_string())
+                        }
+                    };
+                    if let Some(addr) = addr_str {
+                        let device_name = info
+                            .get_property_val_str("fn")
+                            .unwrap_or_else(|| info.get_fullname())
+                            .to_string();
+                        let model = info
+                            .get_property_val_str("md")
+                            .unwrap_or("Chromecast")
+                            .to_string();
+                        let device_id = info
+                            .get_property_val_str("id")
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("{}:{}", addr, info.get_port()));
+
+                        let device_info = CastDeviceInfo {
+                            id: device_id.clone(),
+                            name: device_name.clone(),
+                            address: addr.clone(),
+                            port: info.get_port(),
+                            model: model.clone(),
+                        };
+
+                        info!(
+                            "Discovered Chromecast: {} ({}) at {}:{}",
+                            device_name, model, addr, info.get_port()
+                        );
+
+                        let mut devs = devices.blocking_lock();
+                        devs.insert(device_id.clone(), device_info.clone());
+                        drop(devs);
+
+                        state.publish(SystemEvent::CastDeviceDiscovered {
+                            device: device_info,
+                        });
+                        found = true;
+                    }
+                }
+                ServiceEvent::ServiceRemoved(_type, fullname) => {
+                    let mut devs = devices.blocking_lock();
+                    let removed_id: Option<String> = devs
+                        .iter()
+                        .find(|(_, d)| fullname.contains(&d.name) || fullname.contains(&d.id))
+                        .map(|(id, _)| id.clone());
+                    if let Some(id) = removed_id {
+                        devs.remove(&id);
+                        drop(devs);
+                        state.publish(SystemEvent::CastDeviceRemoved { device_id: id });
+                    }
+                }
+                _ => {}
+            },
+            Ok(Ok(Err(_))) => {}
+            Ok(Err(e)) => {
+                warn!("mDNS discovery task error: {}", e);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+
+    let _ = mdns.shutdown();
+    found
+}
+
+/// Fallback Chromecast discovery using avahi-browse.
+async fn discover_cast_via_avahi(
+    devices: &Arc<Mutex<HashMap<String, CastDeviceInfo>>>,
+    state: &AppStateHandle,
+) {
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new("avahi-browse")
+            .args(["-t", "-r", "-p", "-k", "_googlecast._tcp"])
+            .output(),
+    )
+    .await;
+
+    let output = match result {
+        Ok(Ok(output)) => {
+            if !output.stdout.is_empty() {
+                output
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("avahi-browse for Chromecast failed: {}", stderr);
+                state.publish(SystemEvent::CastError {
+                    message: "No Chromecast devices found on network".to_string(),
+                });
+                return;
+            }
+        }
+        Ok(Err(e)) => {
+            warn!("Failed to run avahi-browse for Chromecast: {}", e);
+            state.publish(SystemEvent::CastError {
+                message: format!("avahi-browse not available: {}", e),
+            });
+            return;
+        }
+        Err(_) => {
+            warn!("avahi-browse for Chromecast timed out");
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut seen_ids = std::collections::HashSet::new();
+
+    // Parse avahi-browse parseable output:
+    // =;interface;protocol;name;type;domain;hostname;address;port;txt
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line.split(';').collect();
+        if fields.len() >= 9 && fields[0] == "=" {
+            let name = fields[3].replace("\\032", " ");
+            let address = fields[7].to_string();
+            let port: u16 = fields[8].parse().unwrap_or(8009);
+
+            // Skip IPv6 addresses
+            if address.contains(':') {
+                continue;
+            }
+
+            let device_id = format!("{}:{}", address, port);
+            if seen_ids.contains(&device_id) {
+                continue;
+            }
+            seen_ids.insert(device_id.clone());
+
+            // Extract model from TXT record if available
+            let model = if fields.len() > 9 {
+                extract_avahi_txt_field(fields[9], "md").unwrap_or_else(|| "Chromecast".to_string())
+            } else {
+                "Chromecast".to_string()
+            };
+
+            let friendly_name = if fields.len() > 9 {
+                extract_avahi_txt_field(fields[9], "fn").unwrap_or_else(|| name.clone())
+            } else {
+                name.clone()
+            };
+
+            let cast_id = if fields.len() > 9 {
+                extract_avahi_txt_field(fields[9], "id").unwrap_or_else(|| device_id.clone())
+            } else {
+                device_id.clone()
+            };
+
+            let device_info = CastDeviceInfo {
+                id: cast_id.clone(),
+                name: friendly_name.clone(),
+                address: address.clone(),
+                port,
+                model: model.clone(),
+            };
+
+            info!(
+                "Discovered Chromecast via avahi: {} ({}) at {}:{}",
+                friendly_name, model, address, port
+            );
+
+            let mut devs = devices.lock().await;
+            devs.insert(cast_id.clone(), device_info.clone());
+            drop(devs);
+
+            state.publish(SystemEvent::CastDeviceDiscovered {
+                device: device_info,
+            });
+        }
+    }
+}
+
+/// Extract a field from an avahi TXT record string.
+fn extract_avahi_txt_field(txt: &str, key: &str) -> Option<String> {
+    let search = format!("\"{}=", key);
+    if let Some(start) = txt.find(&search) {
+        let value_start = start + search.len();
+        if let Some(end) = txt[value_start..].find('"') {
+            return Some(txt[value_start..value_start + end].to_string());
+        }
+    }
+    None
 }
 
 /// Connect to a Chromecast device and tell it to play the MP3 stream URL.

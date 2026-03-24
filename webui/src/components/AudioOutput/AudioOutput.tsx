@@ -1,14 +1,15 @@
 import { useState } from 'preact/hooks';
-import type { CastDevice, AirPlayDevice } from '../../types';
+import type { CastDevice, AirPlayDevice, DeviceInfo } from '../../types';
 import * as api from '../../api/rest';
 
-type OutputTab = 'chromecast' | 'airplay';
+type OutputTab = 'bluetooth' | 'chromecast' | 'airplay';
 
 interface AudioOutputProps {
   castDevices: CastDevice[];
   castActive: string | null;
   airplayDevices: AirPlayDevice[];
   airplayActive: string | null;
+  devices: DeviceInfo[];
 }
 
 export function AudioOutput({
@@ -16,9 +17,10 @@ export function AudioOutput({
   castActive,
   airplayDevices,
   airplayActive,
+  devices,
 }: AudioOutputProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [activeTab, setActiveTab] = useState<OutputTab>('chromecast');
+  const [activeTab, setActiveTab] = useState<OutputTab>('bluetooth');
   const [castScanning, setCastScanning] = useState(false);
   const [airplayScanning, setAirplayScanning] = useState(false);
   const [castVolume, setCastVolume] = useState(80);
@@ -62,20 +64,30 @@ export function AudioOutput({
     await api.airplayVolume(value / 100);
   };
 
+  const connectedBtDevices = devices.filter((d) =>
+    ['connected', 'profile_negotiated', 'pipewire_source_ready', 'audio_active'].includes(d.state)
+  );
+  const btStreaming = devices.filter((d) => d.state === 'audio_active');
   const totalDevices = castDevices.length + airplayDevices.length;
-  const isActive = castActive !== null || airplayActive !== null;
+  const isActive = castActive !== null || airplayActive !== null || btStreaming.length > 0;
 
   return (
-    <div class="card" style={{ flex: '0 0 auto', maxHeight: '200px' }}>
+    <div class="card" style={{ flex: '1 1 0', minHeight: 0 }}>
       <div class="card-header" onClick={() => setCollapsed(!collapsed)}>
         <span class="card-title">
-          Audio Output ({totalDevices})
+          Audio Output
           {isActive && <span class="badge badge-audio" style={{ marginLeft: '6px' }}>Active</span>}
           {collapsed ? ' +' : ' -'}
         </span>
       </div>
       <div class={`card-content ${collapsed ? 'collapsed' : ''}`}>
         <div class="output-tabs">
+          <button
+            class={`output-tab ${activeTab === 'bluetooth' ? 'active' : ''}`}
+            onClick={() => setActiveTab('bluetooth')}
+          >
+            Bluetooth ({connectedBtDevices.length})
+          </button>
           <button
             class={`output-tab ${activeTab === 'chromecast' ? 'active' : ''}`}
             onClick={() => setActiveTab('chromecast')}
@@ -89,6 +101,36 @@ export function AudioOutput({
             AirPlay ({airplayDevices.length})
           </button>
         </div>
+
+        {activeTab === 'bluetooth' && (
+          <div class="output-panel">
+            {connectedBtDevices.length === 0 ? (
+              <div class="empty-state">No Bluetooth devices connected. Pair a device from the Bluetooth Devices section above.</div>
+            ) : (
+              <div class="device-list">
+                {connectedBtDevices.map((device) => (
+                  <div class="device-item" key={device.address}>
+                    <div class="device-info">
+                      <div class="device-name">{device.name || device.address}</div>
+                      <div class="device-details">
+                        <span>{device.address}</span>
+                        {device.codec && <span>{device.codec.toUpperCase()}</span>}
+                        {device.state === 'audio_active' ? (
+                          <span class="badge badge-audio">Streaming</span>
+                        ) : (
+                          <span class="badge badge-connected">Connected</span>
+                        )}
+                      </div>
+                    </div>
+                    <div class="device-actions">
+                      <button class="btn btn-sm btn-secondary" onClick={() => api.disconnectDevice(device.address)}>Disconnect</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {activeTab === 'chromecast' && (
           <div class="output-panel">

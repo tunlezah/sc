@@ -351,6 +351,9 @@ impl BluetoothManager {
                 }
                 let mut app = self.state.state.write().await;
                 app.config.device_name = name;
+                if let Err(e) = app.config.save_to_user_config() {
+                    warn!("Failed to persist device name to config: {}", e);
+                }
             }
         }
     }
