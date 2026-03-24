@@ -1,6 +1,8 @@
 import { useState } from 'preact/hooks';
 import type { DeviceInfo, DeviceState } from '../../types';
 import * as api from '../../api/rest';
+import { CodecStrip } from './CodecStrip';
+import './CodecStrip.css';
 
 interface DeviceListProps {
   devices: DeviceInfo[];
@@ -21,14 +23,6 @@ function stateBadge(state: DeviceState) {
   };
   const { label, cls } = labels[state] || { label: state, cls: 'badge-disconnected' };
   return <span class={`badge ${cls}`}>{label}</span>;
-}
-
-function codecLabel(codec: string | null): string {
-  if (!codec) return '';
-  const labels: Record<string, string> = {
-    sbc: 'SBC', aac: 'AAC', ldac: 'LDAC', apt_x: 'aptX', apt_x_hd: 'aptX HD',
-  };
-  return labels[codec] || codec;
 }
 
 export function DeviceList({ devices, activeDevice: _activeDevice, status }: DeviceListProps) {
@@ -65,9 +59,9 @@ export function DeviceList({ devices, activeDevice: _activeDevice, status }: Dev
                   <div class="device-details">
                     <span>{device.address}</span>
                     {device.rssi !== null && <span>{device.rssi} dBm</span>}
-                    {device.codec && <span>{codecLabel(device.codec)}</span>}
                     {stateBadge(device.state)}
                   </div>
+                  {device.codec && <CodecStrip activeCodec={device.codec} />}
                 </div>
                 <div class="device-actions">
                   {(device.state === 'discovered' || device.state === 'paired' || device.state === 'disconnected') && (
