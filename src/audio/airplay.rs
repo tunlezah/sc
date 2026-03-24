@@ -523,7 +523,7 @@ fn decode_avahi_escapes(s: &str) -> String {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
-            // Try to read 3 octal digits (Avahi uses octal escapes)
+            // Try to read 3 decimal digits
             let mut digits = String::new();
             let mut pending = Vec::new();
             for _ in 0..3 {
@@ -539,7 +539,7 @@ fn decode_avahi_escapes(s: &str) -> String {
                 }
             }
             if digits.len() == 3 {
-                if let Ok(code) = u8::from_str_radix(&digits, 8) {
+                if let Ok(code) = digits.parse::<u8>() {
                     result.push(code as char);
                 } else {
                     // Not a valid u8, emit literally
@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn test_decode_avahi_escapes_at_and_hash() {
         assert_eq!(
-            decode_avahi_escapes("CCCCAC98497B\\064Lounge\\032Room\\032Stereo\\043"),
+            decode_avahi_escapes("CCCCAC98497B\\064Lounge\\032Room\\032Stereo\\035"),
             "CCCCAC98497B@Lounge Room Stereo#"
         );
     }
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn test_full_pipeline() {
-        let raw = "CCCCAC98497B\\064Lounge\\032Room\\032Stereo\\043";
+        let raw = "CCCCAC98497B\\064Lounge\\032Room\\032Stereo\\035";
         let decoded = decode_avahi_escapes(raw);
         assert_eq!(decoded, "CCCCAC98497B@Lounge Room Stereo#");
         let friendly = extract_raop_friendly_name(&decoded);
