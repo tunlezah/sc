@@ -65,13 +65,16 @@ async fn main() {
         app.eq_bands.clone()
     };
 
+    // Subscribe to audio broadcast BEFORE initializing the pipeline so the
+    // receiver is already registered when the capture task starts sending data.
+    let audio_rx = pipeline.audio_receiver();
+
     if let Err(e) = pipeline.initialize(&eq_bands).await {
         error!("Failed to initialize audio pipeline: {}", e);
         info!("Continuing without audio pipeline (audio features will be unavailable)");
     }
 
     // Start spectrum analyzer
-    let audio_rx = pipeline.audio_receiver();
     let spectrum = SpectrumAnalyzer::new(state.clone());
     tokio::spawn(async move {
         spectrum.run(audio_rx).await;
