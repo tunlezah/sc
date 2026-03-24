@@ -155,11 +155,13 @@ impl A2dpEndpoint {
 pub async fn register_endpoints(
     connection: &zbus::Connection,
     state: AppStateHandle,
+    adapter_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let adapter_path = format!("/org/bluez/{}", adapter_name);
     let media_proxy = zbus::Proxy::new(
         connection,
         "org.bluez",
-        "/org/bluez/hci0",
+        adapter_path.as_str(),
         "org.bluez.Media1",
     )
     .await?;
@@ -178,7 +180,7 @@ pub async fn register_endpoints(
         let mut props: HashMap<&str, zvariant::Value<'_>> = HashMap::new();
         props.insert(
             "UUID",
-            zvariant::Value::from(crate::bluetooth::constants::A2DP_SINK_UUID),
+            zvariant::Value::from(crate::bluetooth::constants::A2DP_SOURCE_UUID),
         );
         props.insert("Codec", zvariant::Value::from(codec.codec_id()));
         props.insert("Capabilities", zvariant::Value::from(codec.capabilities()));

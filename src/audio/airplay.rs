@@ -427,7 +427,8 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
     for line in stdout.lines() {
         let fields: Vec<&str> = line.split(';').collect();
         if fields.len() >= 9 && fields[0] == "=" {
-            let name = fields[3].replace("\\032", " ");
+            let raw_name = decode_avahi_escapes(fields[3]);
+            let name = extract_raop_friendly_name(&raw_name);
             let address = fields[7].to_string();
             let port: u16 = fields[8].parse().unwrap_or(7000);
 
@@ -437,9 +438,11 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
             }
             seen_names.insert(name.clone());
 
-            // Extract model from TXT record if available
+            // Extract model from TXT record if available, decode escapes
             let model = if fields.len() > 9 {
-                extract_txt_field(fields[9], "am").unwrap_or_else(|| "AirPlay".to_string())
+                extract_txt_field(fields[9], "am")
+                    .map(|m| decode_avahi_escapes(&m))
+                    .unwrap_or_else(|| "AirPlay".to_string())
             } else {
                 "AirPlay".to_string()
             };
@@ -506,6 +509,73 @@ fn extract_txt_field(txt: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Decode avahi-browse DNS-SD escaped strings.
+///
+/// In parseable output (`-p` flag), avahi-browse encodes special characters as
+/// `\NNN` where NNN is a 3-digit decimal ASCII code. For example:
+/// - `\032` = space (ASCII 32)
+/// - `\064` = `@` (ASCII 64)
+/// - `\043` = `#` (ASCII 43)
+fn decode_avahi_escapes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Try to read 3 decimal digits
+            let mut digits = String::new();
+            let mut pending = Vec::new();
+            for _ in 0..3 {
+                if let Some(d) = chars.next() {
+                    pending.push(d);
+                    if d.is_ascii_digit() {
+                        digits.push(d);
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if digits.len() == 3 {
+                if let Ok(code) = digits.parse::<u8>() {
+                    result.push(code as char);
+                } else {
+                    // Not a valid u8, emit literally
+                    result.push('\\');
+                    for ch in pending {
+                        result.push(ch);
+                    }
+                }
+            } else {
+                // Not 3 digits, emit the backslash and whatever we consumed
+                result.push('\\');
+                for ch in pending {
+                    result.push(ch);
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Extract the friendly device name from a RAOP service name.
+///
+/// RAOP service names are typically in the format `MACADDRESS@Device Name`
+/// (e.g., `CCCCAC98497B@Lounge Room Stereo`). This extracts just the
+/// human-readable part after the `@`. If there is no `@`, returns the
+/// full name. Also strips any trailing `#` that some devices append.
+fn extract_raop_friendly_name(raw_name: &str) -> String {
+    let name = if let Some(at_pos) = raw_name.find('@') {
+        raw_name[at_pos + 1..].to_string()
+    } else {
+        raw_name.to_string()
+    };
+    // Strip trailing '#' that some AirPlay devices append
+    name.trim_end_matches('#').trim().to_string()
 }
 
 /// Extract a property value from a pw-cli output line.
@@ -653,6 +723,72 @@ async fn remove_pw_link(link_id: &str) {
                 warn!("Failed to remove PipeWire link: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_avahi_escapes_space() {
+        assert_eq!(decode_avahi_escapes("Hello\\032World"), "Hello World");
+    }
+
+    #[test]
+    fn test_decode_avahi_escapes_at_and_hash() {
+        assert_eq!(
+            decode_avahi_escapes("CCCCAC98497B\\064Lounge\\032Room\\032Stereo\\043"),
+            "CCCCAC98497B@Lounge Room Stereo#"
+        );
+    }
+
+    #[test]
+    fn test_decode_avahi_escapes_no_escapes() {
+        assert_eq!(decode_avahi_escapes("Plain Name"), "Plain Name");
+    }
+
+    #[test]
+    fn test_decode_avahi_escapes_trailing_backslash() {
+        assert_eq!(decode_avahi_escapes("test\\"), "test\\");
+    }
+
+    #[test]
+    fn test_decode_avahi_escapes_partial_digits() {
+        assert_eq!(decode_avahi_escapes("test\\12x"), "test\\12x");
+    }
+
+    #[test]
+    fn test_extract_raop_friendly_name_with_mac() {
+        assert_eq!(
+            extract_raop_friendly_name("CCCCAC98497B@Lounge Room Stereo#"),
+            "Lounge Room Stereo"
+        );
+    }
+
+    #[test]
+    fn test_extract_raop_friendly_name_no_mac() {
+        assert_eq!(
+            extract_raop_friendly_name("Living Room Speaker"),
+            "Living Room Speaker"
+        );
+    }
+
+    #[test]
+    fn test_extract_raop_friendly_name_no_hash() {
+        assert_eq!(
+            extract_raop_friendly_name("AABBCCDDEEFF@Kitchen"),
+            "Kitchen"
+        );
+    }
+
+    #[test]
+    fn test_full_pipeline() {
+        let raw = "CCCCAC98497B\\064Lounge\\032Room\\032Stereo\\043";
+        let decoded = decode_avahi_escapes(raw);
+        assert_eq!(decoded, "CCCCAC98497B@Lounge Room Stereo#");
+        let friendly = extract_raop_friendly_name(&decoded);
+        assert_eq!(friendly, "Lounge Room Stereo");
     }
 }
 

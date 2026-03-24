@@ -16,7 +16,8 @@ pub fn capabilities() -> Vec<u8> {
 #[allow(dead_code)]
 pub fn select_configuration(remote: &[u8]) -> Vec<u8> {
     if remote.len() < 6 {
-        return capabilities();
+        // Return a single valid default: Sony vendor, LDAC codec, 96kHz, Stereo
+        return vec![0x2D, 0x01, 0xAA, 0x00, 0x04, 0x01];
     }
     // Select 96kHz stereo for maximum quality
     let freq = if remote[4] & 0x04 != 0 {

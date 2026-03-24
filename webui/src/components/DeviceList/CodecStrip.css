@@ -1,0 +1,58 @@
+.codec-strip {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 0 2px;
+}
+
+.codec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.codec-inactive {
+  background: var(--border);
+  color: var(--text-secondary);
+  opacity: 0.45;
+}
+
+.codec-active {
+  background: var(--codec-bg);
+  color: var(--codec-color);
+  border: 1px solid var(--codec-border);
+  box-shadow: 0 0 8px var(--codec-glow), 0 1px 3px rgba(0,0,0,0.1);
+  padding: 3px 10px;
+  font-size: 0.7rem;
+}
+
+.codec-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: codec-pulse 2s ease-in-out infinite;
+}
+
+@keyframes codec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .codec-inactive {
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.3);
+}
+
+[data-theme="dark"] .codec-active {
+  box-shadow: 0 0 12px var(--codec-glow), 0 0 4px var(--codec-glow);
+}

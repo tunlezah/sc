@@ -21,15 +21,21 @@ pub enum AvrcpCommand {
 pub struct AvrcpMonitor {
     state: AppStateHandle,
     cmd_rx: mpsc::Receiver<AvrcpCommand>,
+    adapter_name: String,
     last_track: Option<TrackInfo>,
     last_status: PlaybackStatus,
 }
 
 impl AvrcpMonitor {
-    pub fn new(state: AppStateHandle, cmd_rx: mpsc::Receiver<AvrcpCommand>) -> Self {
+    pub fn new(
+        state: AppStateHandle,
+        cmd_rx: mpsc::Receiver<AvrcpCommand>,
+        adapter_name: String,
+    ) -> Self {
         Self {
             state,
             cmd_rx,
+            adapter_name,
             last_track: None,
             last_status: PlaybackStatus::Unknown,
         }
@@ -118,7 +124,7 @@ impl AvrcpMonitor {
         let app = self.state.state.read().await;
         app.active_device
             .as_ref()
-            .map(|addr| format!("/org/bluez/hci0/dev_{}/player0", addr.replace(':', "_")))
+            .map(|addr| format!("/org/bluez/{}/dev_{}/player0", self.adapter_name, addr.replace(':', "_")))
     }
 
     async fn poll_media_player(&mut self, connection: &zbus::Connection) {
