@@ -386,11 +386,12 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
     let mut devices = Vec::new();
 
     // Run avahi-browse to find RAOP services
-    // Use a timeout instead of -t flag to allow active discovery, not just cached results
+    // Use -t flag to terminate after dumping all currently cached results,
+    // combined with a timeout as a safety net
     let result = tokio::time::timeout(
-        Duration::from_secs(8),
+        Duration::from_secs(10),
         Command::new("avahi-browse")
-            .args(["-r", "-p", "-k", AVAHI_SERVICE])
+            .args(["-t", "-r", "-p", "-k", AVAHI_SERVICE])
             .output(),
     )
     .await;
@@ -399,7 +400,7 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
         Ok(Ok(output)) if output.status.success() => output,
         Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // avahi-browse may exit non-zero when killed by timeout, check if we got output
+            // avahi-browse may exit non-zero but still produce output
             if !output.stdout.is_empty() {
                 output
             } else {
@@ -412,9 +413,7 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
             return discover_via_pw_cli().await;
         }
         Err(_) => {
-            // Timeout expired - avahi-browse is still running, this is expected
-            // The process will be killed when dropped. Try pw-cli as fallback.
-            info!("avahi-browse timed out, trying pw-cli fallback");
+            warn!("avahi-browse timed out, trying pw-cli fallback");
             return discover_via_pw_cli().await;
         }
     };
