@@ -23,6 +23,7 @@ export class WebRTCClient {
       if (!this.audioElement) {
         this.audioElement = document.createElement('audio');
         this.audioElement.autoplay = true;
+        document.body.appendChild(this.audioElement);
       }
       this.audioElement.srcObject = event.streams[0];
       this.audioElement.play().catch(() => {
@@ -73,6 +74,8 @@ export class WebRTCClient {
     if (this.audioElement) {
       this.audioElement.pause();
       this.audioElement.srcObject = null;
+      this.audioElement.remove();
+      this.audioElement = null;
     }
     this.pc?.close();
     this.pc = null;
