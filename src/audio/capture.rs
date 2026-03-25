@@ -19,7 +19,7 @@ const BYTES_PER_FRAME: usize = SAMPLES_PER_FRAME * 4; // f32 = 4 bytes
 
 impl AudioCapture {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(64);
         Self {
             sender: tx,
             child: None,
@@ -64,7 +64,7 @@ impl AudioCapture {
                     "--format=float32".to_string(),
                     format!("--channels={}", CHANNELS),
                     format!("--rate={}", SAMPLE_RATE),
-                    format!("--monitor-stream={}", source_name),
+                    format!("--device={}", source_name),
                 ],
             )
         } else {
