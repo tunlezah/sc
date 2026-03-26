@@ -59,10 +59,9 @@ async fn stream_aac_inner(
 
     // Stream the AAC output chunks to the HTTP response
     let stream = stream::unfold(encoder, |mut enc| async move {
-        match enc.recv_aac().await {
-            Some(data) => Some((Ok::<_, std::io::Error>(data), enc)),
-            None => None,
-        }
+        enc.recv_aac()
+            .await
+            .map(|data| (Ok::<_, std::io::Error>(data), enc))
     });
 
     let body = Body::from_stream(stream);
