@@ -29,18 +29,28 @@ impl AacEncoder {
         let mut child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
-                "-loglevel", "error",
+                "-loglevel",
+                "error",
                 // Input: raw PCM f32le stereo 48kHz from stdin
-                "-f", "f32le",
-                "-ar", "48000",
-                "-ac", "2",
-                "-i", "pipe:0",
+                "-f",
+                "f32le",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-i",
+                "pipe:0",
                 // Output: AAC-LC 256kbps in ADTS container to stdout
-                "-c:a", "aac",
-                "-b:a", "256k",
-                "-profile:a", "aac_low",
-                "-cutoff", "20000",
-                "-f", "adts",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "256k",
+                "-profile:a",
+                "aac_low",
+                "-cutoff",
+                "20000",
+                "-f",
+                "adts",
                 "pipe:1",
             ])
             .stdin(Stdio::piped())

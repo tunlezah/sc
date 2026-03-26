@@ -40,7 +40,10 @@ impl AudioPipeline {
         // Start filter-chain with initial EQ (non-fatal)
         match self.filter_chain.apply_eq(bands).await {
             Ok(()) => info!("Filter-chain (EQ) started"),
-            Err(e) => warn!("Filter-chain (EQ) unavailable: {} — audio will bypass EQ", e),
+            Err(e) => warn!(
+                "Filter-chain (EQ) unavailable: {} — audio will bypass EQ",
+                e
+            ),
         }
 
         // Start audio capture from monitor source
