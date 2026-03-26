@@ -1,3 +1,4 @@
+pub mod aac_encoder;
 pub mod airplay;
 pub mod capture;
 pub mod cast_stream;

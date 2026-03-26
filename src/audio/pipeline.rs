@@ -28,13 +28,20 @@ impl AudioPipeline {
         }
     }
 
-    /// Initialize the audio pipeline: create null sink, start filter-chain.
+    /// Initialize the audio pipeline: create null sink, start filter-chain, start capture.
+    ///
+    /// The filter-chain (EQ) is non-fatal: if it fails to start, audio capture
+    /// still proceeds without EQ processing. This prevents a missing
+    /// `pipewire-filter-chain` binary from silently breaking all audio.
     pub async fn initialize(&mut self, bands: &[EqBand]) -> Result<(), String> {
         // Create null sink for monitoring/capture
         self.create_null_sink().await?;
 
-        // Start filter-chain with initial EQ
-        self.filter_chain.apply_eq(bands).await?;
+        // Start filter-chain with initial EQ (non-fatal)
+        match self.filter_chain.apply_eq(bands).await {
+            Ok(()) => info!("Filter-chain (EQ) started"),
+            Err(e) => warn!("Filter-chain (EQ) unavailable: {} — audio will bypass EQ", e),
+        }
 
         // Start audio capture from monitor source
         self.capture.start(MONITOR_SOURCE).await?;

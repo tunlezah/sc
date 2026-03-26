@@ -146,7 +146,7 @@ impl ChromecastManager {
 
         let local_ip = detect_local_ip();
         let stream_url = format!(
-            "http://{}:{}/api/stream/audio.mp3",
+            "http://{}:{}/api/stream/audio.aac",
             local_ip, self.server_port
         );
 
@@ -569,10 +569,10 @@ fn connect_and_play(address: &str, port: u16, stream_url: &str) -> Result<String
         .connect(&transport_id)
         .map_err(|e| format!("Failed to connect to transport: {}", e))?;
 
-    // Load the MP3 stream
+    // Load the AAC stream (ADTS)
     let media = Media {
         content_id: stream_url.to_string(),
-        content_type: "audio/mpeg".to_string(),
+        content_type: "audio/aac".to_string(),
         stream_type: StreamType::Live,
         duration: None,
         metadata: None,

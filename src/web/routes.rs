@@ -132,8 +132,9 @@ pub fn create_router(app: AppRouter) -> Router {
         .route("/api/airplay/connect", post(post_airplay_connect))
         .route("/api/airplay/disconnect", post(post_airplay_disconnect))
         .route("/api/airplay/volume", post(post_airplay_volume))
-        // HTTP Audio Stream
-        .route("/api/stream/audio.mp3", get(get_audio_stream))
+        // HTTP Audio Streams (AAC-LC primary, MP3 legacy fallback)
+        .route("/api/stream/audio.aac", get(get_audio_stream_aac))
+        .route("/api/stream/audio.mp3", get(get_audio_stream_mp3))
         // WebSocket
         .route("/ws/status", get(ws::ws_handler))
         .with_state(app)
@@ -439,9 +440,24 @@ async fn post_airplay_volume(
     ok_response()
 }
 
-// -- HTTP Audio Stream endpoint --
+// -- HTTP Audio Stream endpoints --
 
-async fn get_audio_stream(
+/// AAC-LC stream (primary, 256 kbps ADTS - universal compatibility).
+/// Falls back to MP3 if FFmpeg is not available.
+async fn get_audio_stream_aac(
+    State(app): State<AppRouter>,
+) -> Result<axum::response::Response, StatusCode> {
+    let audio_sender = app
+        .audio_sender
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?
+        .clone();
+
+    crate::audio::cast_stream::stream_audio_aac(audio_sender).await
+}
+
+/// Legacy MP3 stream endpoint.
+async fn get_audio_stream_mp3(
     State(app): State<AppRouter>,
 ) -> Result<axum::response::Response, StatusCode> {
     let audio_sender = app
