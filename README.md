@@ -8,7 +8,7 @@ Bluetooth A2DP audio receiver with multi-room casting to AirPlay and Chromecast 
 - **A2DP Codec Negotiation** — registers D-Bus MediaEndpoint1 for automatic codec selection (SBC, AAC, LDAC, aptX, aptX HD) with BlueZ
 - **Chromecast Audio Output** — cast audio to any Google Cast device (Chromecast Audio, Gen 1/2/3, Ultra, Google Nest/Home) via CASTV2 protocol with mDNS discovery
 - **AirPlay Audio Output** — stream to AirPlay receivers using PipeWire's RAOP module with Avahi/mDNS discovery
-- **HTTP MP3 Stream** — live MP3 stream at `/api/stream/audio.mp3` (192 kbps CBR) accessible by any media player or Cast device
+- **HTTP AAC/MP3 Stream** — live AAC-LC stream at `/api/stream/audio.aac` (256 kbps, ADTS) for universal compatibility (Safari, Chrome, Chromecast, AirPlay), plus legacy MP3 at `/api/stream/audio.mp3` (192 kbps CBR)
 - **10-Band Parametric EQ** — low-shelf, peaking, and high-shelf filters from 60 Hz to 16 kHz with +/-12 dB gain, processed via PipeWire filter-chain
 - **EQ Presets** — 7 built-in presets (Flat, Bass Boost, Vocal, Classical, Rock, Electronic, Podcast) plus custom preset save/load/delete
 - **Real-Time Spectrum Visualizer** — 2048-point FFT with 64 logarithmic frequency bands at 48 kHz
@@ -39,7 +39,7 @@ Bluetooth A2DP audio receiver with multi-room casting to AirPlay and Chromecast 
 | Google Home Mini | CASTV2 | Supported |
 | Google Home Max | CASTV2 | Supported |
 
-All devices using the Google Cast protocol are supported. The system uses mDNS to discover `_googlecast._tcp.local.` services on the network. Audio is streamed as an HTTP MP3 stream that the Chromecast pulls from SoundSync's HTTP server. This approach supports all Cast protocol versions and device generations.
+All devices using the Google Cast protocol are supported. The system uses mDNS to discover `_googlecast._tcp.local.` services on the network. Audio is streamed as an HTTP AAC-LC stream (ADTS, 256 kbps) that the Chromecast pulls from SoundSync's HTTP server, with automatic fallback to MP3 if FFmpeg is unavailable. This approach supports all Cast protocol versions and device generations.
 
 ### AirPlay
 
@@ -61,13 +61,14 @@ AirPlay output uses PipeWire's built-in `module-raop-sink` with `module-raop-dis
 - **Chromecast**: network connectivity (devices discovered via mDNS)
 - **AirPlay**: PipeWire RAOP module + Avahi daemon
 - **Build**: Rust stable toolchain, Node.js 22, pkg-config
+- **Streaming**: FFmpeg (for AAC-LC encoding; falls back to MP3 if unavailable)
 
 System packages:
 
 ```
 bluetooth bluez pipewire pipewire-pulse wireplumber pipewire-module-raop
 libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential
-avahi-daemon avahi-utils
+avahi-daemon avahi-utils ffmpeg
 ```
 
 ## Quick Start
@@ -110,14 +111,14 @@ Bluetooth Device (A2DP Source)
         |
     BlueZ Socket
         |
-PipeWire Null Sink (soundsync-capture)
+PipeWire Null Sink (soundsync-capture) [set as default sink]
         |
 PipeWire Monitor Source (soundsync-capture.monitor)
         |
 [PCM f32 Audio Broadcast Channel]
     |-- WebRTC Manager --> Opus Encoder --> RTP --> Browser
     |-- Spectrum Analyzer --> FFT --> 64-band spectrum --> WebSocket
-    |-- MP3 Encoder --> HTTP Stream --> Chromecast (CASTV2)
+    |-- AAC-LC Encoder (FFmpeg) --> HTTP Stream --> Chromecast (CASTV2)
     |-- PipeWire Filter-Chain (EQ) --> pw-link --> AirPlay (RAOP Sink)
     +-- Line-In Source (optional input)
 ```
@@ -127,10 +128,10 @@ PipeWire Monitor Source (soundsync-capture.monitor)
 1. **BluetoothManager** — manages adapter, device discovery, connections via BlueZ
 2. **A2dpEndpoint** — registers `org.bluez.MediaEndpoint1` on D-Bus for each codec, enabling BlueZ to negotiate audio codec parameters with connecting devices
 3. **AudioPipeline** — creates a PipeWire null sink, filter-chain (EQ), and audio capture; provides the PCM broadcast channel that all outputs subscribe to
-4. **ChromecastManager** — discovers Google Cast devices via mDNS (`_googlecast._tcp.local.`), manages CASTV2 connections via `rust_cast`, instructs Chromecast to play the HTTP MP3 stream URL
+4. **ChromecastManager** — discovers Google Cast devices via mDNS (`_googlecast._tcp.local.`), manages CASTV2 connections via `rust_cast`, instructs Chromecast to play the HTTP AAC stream URL
 5. **AirPlayManager** — discovers AirPlay devices via Avahi (`_raop._tcp`), loads PipeWire RAOP modules, routes audio via `pw-link` from the capture sink to the RAOP sink
 6. **WebRtcManager** — accepts browser WebRTC offers, encodes captured PCM audio to Opus via RTP, and streams to browser clients
-7. **MP3 Stream Endpoint** — HTTP endpoint (`/api/stream/audio.mp3`) that subscribes to the PCM broadcast, encodes to MP3 192 kbps CBR, and serves as a chunked HTTP response
+7. **AAC/MP3 Stream Endpoint** — HTTP endpoint (`/api/stream/audio.aac`) that subscribes to the PCM broadcast, encodes to AAC-LC 256 kbps via FFmpeg, and serves as a chunked ADTS HTTP response. Falls back to MP3 192 kbps if FFmpeg is unavailable. Legacy MP3 endpoint also available at `/api/stream/audio.mp3`
 8. **AvrcpMonitor** — polls BlueZ for playback status and track metadata via AVRCP
 9. **SpectrumAnalyzer** — consumes PCM audio and produces 64-band FFT spectrum data
 10. **Web Server** — Axum HTTP server with REST API, WebSocket events, and static file serving
@@ -204,7 +205,8 @@ max_devices = 1          # Max concurrent connections
 | `POST` | `/api/airplay/connect` | Connect to an AirPlay device |
 | `POST` | `/api/airplay/disconnect` | Stop AirPlay |
 | `POST` | `/api/airplay/volume` | Set AirPlay volume |
-| `GET` | `/api/stream/audio.mp3` | Live MP3 audio stream (192 kbps) |
+| `GET` | `/api/stream/audio.aac` | Live AAC-LC audio stream (256 kbps, ADTS) |
+| `GET` | `/api/stream/audio.mp3` | Live MP3 audio stream (192 kbps, legacy) |
 
 ### WebSocket
 
@@ -229,11 +231,12 @@ src/
 │   ├── pipeline.rs      # PipeWire null sink + filter-chain management
 │   ├── capture.rs       # PCM audio capture via pw-cat/parec
 │   ├── opus_encoder.rs  # Opus encoding for WebRTC (48kHz stereo 128kbps)
-│   ├── mp3_encoder.rs   # MP3 encoding for HTTP stream (48kHz stereo 192kbps)
+│   ├── aac_encoder.rs   # AAC-LC encoding via FFmpeg (48kHz stereo 256kbps ADTS)
+│   ├── mp3_encoder.rs   # MP3 encoding fallback (48kHz stereo 192kbps)
 │   ├── webrtc_audio.rs  # WebRTC session manager with RTP streaming
 │   ├── chromecast.rs    # ChromecastManager - mDNS discovery, CASTV2 sessions
 │   ├── airplay.rs       # AirPlayManager - PipeWire RAOP routing, Avahi discovery
-│   ├── cast_stream.rs   # HTTP MP3 stream endpoint handler
+│   ├── cast_stream.rs   # HTTP AAC/MP3 stream endpoint handler
 │   ├── spectrum.rs      # FFT spectrum analyzer (64 bands)
 │   ├── filter_chain.rs  # PipeWire filter-chain config generation
 │   └── line_in.rs       # Line-in source detection
@@ -301,6 +304,21 @@ GitHub Actions runs on every push and PR to `main`:
 Download the latest release binary from the [Actions tab](../../actions) artifacts.
 
 ## Changelog
+
+### v2.4.0
+
+- **Fix Audio Pipeline** — set null sink as default PipeWire sink so Bluetooth A2DP audio is routed to the capture pipeline instead of system speakers. This was the root cause of no audio reaching the browser or spectrum visualizer.
+- **AAC-LC Streaming** — switched Chromecast/HTTP stream from MP3 to AAC-LC 256 kbps in ADTS container via FFmpeg, providing universal compatibility across Safari, Chrome, Chromecast, and AirPlay. Automatic fallback to MP3 if FFmpeg is unavailable.
+- **Dual Stream Endpoints** — `/api/stream/audio.aac` (primary, AAC-LC 256 kbps) and `/api/stream/audio.mp3` (legacy, MP3 192 kbps)
+- **Pipeline Resilience** — filter-chain (EQ) failure no longer aborts audio capture; audio continues without EQ processing
+- **Fix parec Fallback** — corrected `--monitor-stream` to `--device` flag for parec audio capture source selection
+- **Broadcast Buffer** — increased from 16 to 64 frames (320ms → 1.28s) to reduce frame skipping under load
+- **Install Script** — added ffmpeg dependency, synced version to 2.4.0
+
+### v2.3.0
+
+- **Audio Pipeline Fixes** — fixed equalizer visualization and audio output issues
+- **A2DP Sink Registration** — corrected UUID from Source to Sink for proper A2DP sink functionality
 
 ### v2.0.0
 

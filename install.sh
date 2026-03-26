@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="2.1.0"
+VERSION="2.4.0"
 VERSION_FILE="${INSTALL_DIR}/.soundsync-version"
 
 # Colors
@@ -108,6 +108,7 @@ install_dependencies() {
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
         libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential \
         avahi-daemon avahi-utils \
+        ffmpeg \
         git curl unzip
 
     # Install Rust if not present

@@ -58,6 +58,8 @@ impl AudioPipeline {
     }
 
     /// Create the null sink used for monitoring and WebRTC capture.
+    /// Also sets it as the default PipeWire/PulseAudio sink so that
+    /// incoming Bluetooth A2DP audio is routed here automatically.
     async fn create_null_sink(&mut self) -> Result<(), String> {
         let output = Command::new("pactl")
             .args([
@@ -81,6 +83,29 @@ impl AudioPipeline {
             info!("Null sink created with module ID {}", id);
         } else {
             warn!("Could not parse module ID from pactl output: {}", id_str);
+        }
+
+        // Set the null sink as the default so Bluetooth A2DP audio is routed
+        // here instead of to the system's built-in speakers/HDMI output.
+        let set_default = Command::new("pactl")
+            .args(["set-default-sink", NULL_SINK_NAME])
+            .output()
+            .await;
+
+        match set_default {
+            Ok(out) if out.status.success() => {
+                info!("Default sink set to {}", NULL_SINK_NAME);
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                warn!(
+                    "Failed to set default sink to {}: {}",
+                    NULL_SINK_NAME, stderr
+                );
+            }
+            Err(e) => {
+                warn!("Failed to run pactl set-default-sink: {}", e);
+            }
         }
 
         Ok(())
