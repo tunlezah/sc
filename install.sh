@@ -105,6 +105,7 @@ install_dependencies() {
     apt-get install -y -qq \
         bluetooth bluez \
         pipewire pipewire-pulse wireplumber pulseaudio-utils \
+        libspa-0.2-bluetooth \
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
         libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential \
         avahi-daemon avahi-utils \
@@ -161,7 +162,59 @@ BTCONF
 }
 
 # -------------------------------------------------------------------
-# 3b. Configure Avahi (mDNS for Chromecast/AirPlay discovery)
+# 3b. Configure WirePlumber for A2DP sink role
+# -------------------------------------------------------------------
+configure_wireplumber() {
+    log "Configuring WirePlumber for A2DP audio sink..."
+
+    # WirePlumber 0.5+ uses .conf files
+    local WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
+    # WirePlumber 0.4.x uses Lua files
+    local WP_LUA_DIR="/etc/wireplumber/bluetooth.lua.d"
+
+    # Detect WirePlumber version
+    local WP_VERSION
+    WP_VERSION=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "0.4")
+
+    if [[ -d "/etc/wireplumber/wireplumber.conf.d" ]] || dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
+        # WirePlumber 0.5+ (SPA JSON config)
+        mkdir -p "${WP_CONF_DIR}"
+        cat > "${WP_CONF_DIR}/51-soundsync.conf" << 'WPCONF'
+# SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
+monitor.bluez.properties = {
+    bluez5.roles = [ a2dp_sink ]
+    bluez5.codecs = [ sbc aac ldac aptx aptx_hd ]
+    bluez5.enable-sbc-xq = true
+    bluez5.enable-msbc = false
+    bluez5.enable-hw-volume = true
+    bluez5.a2dp.opus.pro.channels = 0
+}
+WPCONF
+        log "WirePlumber 0.5+ config written to ${WP_CONF_DIR}/51-soundsync.conf"
+    else
+        # WirePlumber 0.4.x (Lua config)
+        mkdir -p "${WP_LUA_DIR}"
+        cat > "${WP_LUA_DIR}/51-soundsync.lua" << 'WPLUA'
+-- SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
+bluez_monitor.properties = {
+    ["bluez5.roles"] = "[ a2dp_sink ]",
+    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
+    ["bluez5.enable-sbc-xq"] = true,
+    ["bluez5.enable-msbc"] = false,
+    ["bluez5.enable-hw-volume"] = true,
+}
+WPLUA
+        log "WirePlumber 0.4.x config written to ${WP_LUA_DIR}/51-soundsync.lua"
+    fi
+
+    # Restart WirePlumber to pick up the new config
+    systemctl --user restart wireplumber 2>/dev/null || \
+        su - "${SERVICE_USER}" -s /bin/bash -c "systemctl --user restart wireplumber" 2>/dev/null || \
+        warn "Could not restart WirePlumber — reboot may be needed"
+}
+
+# -------------------------------------------------------------------
+# 3c. Configure Avahi (mDNS for Chromecast/AirPlay discovery)
 # -------------------------------------------------------------------
 configure_avahi() {
     log "Configuring Avahi (mDNS) for device discovery..."
@@ -334,13 +387,15 @@ build_soundsync() {
 create_service() {
     log "Creating systemd service..."
 
-    # Create service user if needed
-    if ! id "${SERVICE_USER}" &>/dev/null; then
-        useradd --system --shell /usr/sbin/nologin --groups audio,bluetooth "${SERVICE_USER}"
-        log "Created user ${SERVICE_USER}"
-    else
-        usermod -aG audio,bluetooth "${SERVICE_USER}" 2>/dev/null || true
-    fi
+    # Use the real user who invoked sudo (not root, not a separate service user).
+    # PipeWire and WirePlumber are per-user services — SoundSync MUST run as
+    # the same user to share the audio session and see Bluetooth audio nodes.
+    local RUN_USER="${SUDO_USER:-$(whoami)}"
+    local RUN_UID
+    RUN_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
+
+    # Ensure user is in audio and bluetooth groups
+    usermod -aG audio,bluetooth "${RUN_USER}" 2>/dev/null || true
 
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
@@ -349,11 +404,12 @@ After=bluetooth.service pipewire.service avahi-daemon.service
 
 [Service]
 Type=simple
-User=${SERVICE_USER}
+User=${RUN_USER}
 Group=audio
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/soundsync
-Environment=XDG_RUNTIME_DIR=/run/user/$(id -u "${SERVICE_USER}" 2>/dev/null || echo "1000")
+Environment=XDG_RUNTIME_DIR=/run/user/${RUN_UID}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus
 Environment=RUST_LOG=info
 Restart=on-failure
 RestartSec=5
@@ -362,7 +418,11 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+    # Enable linger so PipeWire persists when no login session is active
+    loginctl enable-linger "${RUN_USER}" 2>/dev/null || warn "Could not enable-linger for ${RUN_USER}"
+
     systemctl daemon-reload
+    log "Service will run as user '${RUN_USER}' (UID ${RUN_UID})"
     log "Service file created at ${SERVICE_FILE}"
 }
 
@@ -371,11 +431,12 @@ EOF
 # -------------------------------------------------------------------
 setup_xdg() {
     log "Setting up XDG_RUNTIME_DIR..."
-    loginctl enable-linger "${SERVICE_USER}" 2>/dev/null || warn "Could not enable-linger for ${SERVICE_USER}"
+    local RUN_USER="${SUDO_USER:-$(whoami)}"
+    loginctl enable-linger "${RUN_USER}" 2>/dev/null || warn "Could not enable-linger for ${RUN_USER}"
     local uid
-    uid=$(id -u "${SERVICE_USER}" 2>/dev/null || echo "1000")
+    uid=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
     mkdir -p "/run/user/${uid}"
-    chown "${SERVICE_USER}:${SERVICE_USER}" "/run/user/${uid}" 2>/dev/null || true
+    chown "${RUN_USER}:${RUN_USER}" "/run/user/${uid}" 2>/dev/null || true
 }
 
 # -------------------------------------------------------------------
@@ -405,6 +466,7 @@ main() {
     detect_system
     install_dependencies
     configure_bluetooth
+    configure_wireplumber
     configure_avahi
     build_soundsync
     create_service
