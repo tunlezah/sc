@@ -1,3 +1,8 @@
+// A2DP endpoint registration is currently disabled — WirePlumber handles
+// codec negotiation and transport acquisition natively. This module is
+// retained for potential future use (e.g. codec-aware UI updates).
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
