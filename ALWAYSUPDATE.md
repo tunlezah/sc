@@ -67,6 +67,7 @@ the transport. Current approach: let WirePlumber handle A2DP entirely.
 ```
 bluetooth bluez
 pipewire pipewire-pulse wireplumber pulseaudio-utils
+libspa-0.2-bluetooth              # CRITICAL: PipeWire BlueZ SPA plugin — without this, WirePlumber cannot do Bluetooth at all
 libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev
 libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential
 avahi-daemon avahi-utils

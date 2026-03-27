@@ -66,7 +66,8 @@ AirPlay output uses PipeWire's built-in `module-raop-sink` with `module-raop-dis
 System packages:
 
 ```
-bluetooth bluez pipewire pipewire-pulse wireplumber pipewire-module-raop
+bluetooth bluez pipewire pipewire-pulse wireplumber pulseaudio-utils
+libspa-0.2-bluetooth pipewire-module-raop
 libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential
 avahi-daemon avahi-utils ffmpeg
 ```
