@@ -104,7 +104,7 @@ install_dependencies() {
     apt-get update -qq
     apt-get install -y -qq \
         bluetooth bluez \
-        pipewire pipewire-pulse wireplumber \
+        pipewire pipewire-pulse wireplumber pulseaudio-utils \
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
         libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential \
         avahi-daemon avahi-utils \
