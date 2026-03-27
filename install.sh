@@ -161,7 +161,59 @@ BTCONF
 }
 
 # -------------------------------------------------------------------
-# 3b. Configure Avahi (mDNS for Chromecast/AirPlay discovery)
+# 3b. Configure WirePlumber for A2DP sink role
+# -------------------------------------------------------------------
+configure_wireplumber() {
+    log "Configuring WirePlumber for A2DP audio sink..."
+
+    # WirePlumber 0.5+ uses .conf files
+    local WP_CONF_DIR="/etc/wireplumber/wireplumber.conf.d"
+    # WirePlumber 0.4.x uses Lua files
+    local WP_LUA_DIR="/etc/wireplumber/bluetooth.lua.d"
+
+    # Detect WirePlumber version
+    local WP_VERSION
+    WP_VERSION=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "0.4")
+
+    if [[ -d "/etc/wireplumber/wireplumber.conf.d" ]] || dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
+        # WirePlumber 0.5+ (SPA JSON config)
+        mkdir -p "${WP_CONF_DIR}"
+        cat > "${WP_CONF_DIR}/51-soundsync.conf" << 'WPCONF'
+# SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
+monitor.bluez.properties = {
+    bluez5.roles = [ a2dp_sink ]
+    bluez5.codecs = [ sbc aac ldac aptx aptx_hd ]
+    bluez5.enable-sbc-xq = true
+    bluez5.enable-msbc = false
+    bluez5.enable-hw-volume = true
+    bluez5.a2dp.opus.pro.channels = 0
+}
+WPCONF
+        log "WirePlumber 0.5+ config written to ${WP_CONF_DIR}/51-soundsync.conf"
+    else
+        # WirePlumber 0.4.x (Lua config)
+        mkdir -p "${WP_LUA_DIR}"
+        cat > "${WP_LUA_DIR}/51-soundsync.lua" << 'WPLUA'
+-- SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
+bluez_monitor.properties = {
+    ["bluez5.roles"] = "[ a2dp_sink ]",
+    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
+    ["bluez5.enable-sbc-xq"] = true,
+    ["bluez5.enable-msbc"] = false,
+    ["bluez5.enable-hw-volume"] = true,
+}
+WPLUA
+        log "WirePlumber 0.4.x config written to ${WP_LUA_DIR}/51-soundsync.lua"
+    fi
+
+    # Restart WirePlumber to pick up the new config
+    systemctl --user restart wireplumber 2>/dev/null || \
+        su - "${SERVICE_USER}" -s /bin/bash -c "systemctl --user restart wireplumber" 2>/dev/null || \
+        warn "Could not restart WirePlumber — reboot may be needed"
+}
+
+# -------------------------------------------------------------------
+# 3c. Configure Avahi (mDNS for Chromecast/AirPlay discovery)
 # -------------------------------------------------------------------
 configure_avahi() {
     log "Configuring Avahi (mDNS) for device discovery..."
@@ -405,6 +457,7 @@ main() {
     detect_system
     install_dependencies
     configure_bluetooth
+    configure_wireplumber
     configure_avahi
     build_soundsync
     create_service
