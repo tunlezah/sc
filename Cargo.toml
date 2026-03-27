@@ -1,6 +1,6 @@
 [package]
 name = "soundsync"
-version = "2.4.0"
+version = "2.5.0"
 edition = "2021"
 description = "Bluetooth A2DP Sink with DSP EQ, WebRTC streaming, and Web UI"
 license = "MIT"
