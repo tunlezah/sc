@@ -7,14 +7,12 @@ use tracing::{debug, info, warn};
 /// Captures PCM audio from PipeWire/PulseAudio sources.
 /// Audio is broadcast as Vec<f32> frames (960 stereo samples = 1920 f32 values per 20ms).
 ///
-/// Uses a 3-tier source resolution strategy (matching the reference BluetoothA2DP project):
+/// Uses a 3-tier source resolution strategy:
 /// 1. Direct Bluetooth source (`bluez_input.*` / `bluez_source.*`) — highest fidelity
-/// 2. Null sink monitor (`soundsync-capture.monitor`) — captures routed audio
-/// 3. Default monitor (`@DEFAULT_MONITOR@`) — fallback
+/// 2. Named null sink (e.g. `soundsync-capture`) — captures routed audio
+/// 3. No target (default source) — fallback
 ///
-/// Prefers `parec` over `pw-cat` because `parec` uses PulseAudio source names
-/// which are stable and predictable, while `pw-cat --target` expects PipeWire
-/// node names/serials which may differ.
+/// Works with both PulseAudio tools (parec) and PipeWire-native tools (pw-cat).
 pub struct AudioCapture {
     sender: broadcast::Sender<Vec<f32>>,
     child: Option<Child>,
@@ -48,46 +46,15 @@ impl AudioCapture {
     ///
     /// Tries sources in priority order:
     /// 1. Any active `bluez_input.*` or `bluez_source.*` source (direct BT capture)
-    /// 2. The named monitor source (e.g. `soundsync-capture.monitor`)
-    /// 3. `@DEFAULT_MONITOR@` (PulseAudio's default monitor)
-    pub async fn start(&mut self, fallback_source: &str) -> Result<(), String> {
+    /// 2. The named null sink (for routed audio)
+    /// 3. Default source (no target specified)
+    pub async fn start(&mut self, null_sink_name: &str) -> Result<(), String> {
         self.stop().await;
 
-        let source = resolve_capture_source(fallback_source).await;
-        info!("Resolved capture source: {}", source);
+        let source = resolve_capture_source(null_sink_name).await;
+        info!("Resolved capture source: {:?}", source);
 
-        // Prefer parec (PulseAudio client) — uses PulseAudio source names which
-        // are stable. pw-cat --target expects PipeWire node names which may differ.
-        let (cmd, args) = if which_exists("parec") {
-            (
-                "parec",
-                vec![
-                    "--raw".to_string(),
-                    "--format=float32".to_string(),
-                    format!("--channels={}", CHANNELS),
-                    format!("--rate={}", SAMPLE_RATE),
-                    format!("--device={}", source),
-                ],
-            )
-        } else if which_exists("pw-cat") {
-            (
-                "pw-cat",
-                vec![
-                    "--target".to_string(),
-                    source.clone(),
-                    "--format".to_string(),
-                    "f32".to_string(),
-                    "--channels".to_string(),
-                    CHANNELS.to_string(),
-                    "--rate".to_string(),
-                    SAMPLE_RATE.to_string(),
-                    "-r".to_string(),
-                    "-".to_string(),
-                ],
-            )
-        } else {
-            return Err("Neither parec nor pw-cat found".to_string());
-        };
+        let (cmd, args) = build_capture_command(&source)?;
 
         info!("Starting audio capture: {} {:?}", cmd, args);
 
@@ -148,7 +115,7 @@ impl AudioCapture {
         }
 
         self.child = Some(child);
-        info!("Audio capture started from source: {}", source);
+        info!("Audio capture started");
         Ok(())
     }
 
@@ -169,31 +136,114 @@ impl Drop for AudioCapture {
     }
 }
 
-/// Resolve the best audio capture source using a 3-tier priority:
-/// 1. Active Bluetooth source (`bluez_input.*` or `bluez_source.*`)
-/// 2. Named fallback source (typically `soundsync-capture.monitor`)
-/// 3. `@DEFAULT_MONITOR@` (PulseAudio default monitor)
-async fn resolve_capture_source(fallback: &str) -> String {
+/// Resolved audio source for capture.
+#[derive(Debug)]
+enum CaptureSource {
+    /// Direct Bluetooth source node (e.g. "bluez_input.44_4A_DB_B4_E7_0D")
+    BluetoothDirect(String),
+    /// Named null sink to capture monitor from (e.g. "soundsync-capture")
+    NullSink(String),
+    /// No specific source — use default
+    Default,
+}
+
+/// Resolve the best audio capture source using a 3-tier priority.
+async fn resolve_capture_source(null_sink_name: &str) -> CaptureSource {
     // Try to find an active Bluetooth audio source
     if let Some(bt_source) = find_bluetooth_source().await {
         info!("Found Bluetooth audio source: {}", bt_source);
-        return bt_source;
+        return CaptureSource::BluetoothDirect(bt_source);
     }
 
-    // Check if the fallback source exists
-    if source_exists(fallback).await {
-        debug!("Using fallback source: {}", fallback);
-        return fallback.to_string();
+    // Check if the null sink exists (it may not if pactl/pw-loopback failed)
+    if node_exists(null_sink_name).await {
+        debug!("Using null sink: {}", null_sink_name);
+        return CaptureSource::NullSink(null_sink_name.to_string());
     }
 
-    // Last resort: PulseAudio's built-in default monitor
-    info!("Using @DEFAULT_MONITOR@ as capture source");
-    "@DEFAULT_MONITOR@".to_string()
+    info!("No specific source found — using default");
+    CaptureSource::Default
 }
 
-/// Search for active Bluetooth audio sources in PulseAudio/PipeWire.
-/// Returns the first `bluez_input.*` or `bluez_source.*` source found.
+/// Build the capture command and arguments based on available tools and source.
+fn build_capture_command(source: &CaptureSource) -> Result<(&'static str, Vec<String>), String> {
+    if which_exists("parec") {
+        // parec uses PulseAudio source names
+        let device = match source {
+            CaptureSource::BluetoothDirect(name) => name.clone(),
+            CaptureSource::NullSink(name) => format!("{}.monitor", name),
+            CaptureSource::Default => "@DEFAULT_MONITOR@".to_string(),
+        };
+
+        Ok((
+            "parec",
+            vec![
+                "--raw".to_string(),
+                "--format=float32".to_string(),
+                format!("--channels={}", CHANNELS),
+                format!("--rate={}", SAMPLE_RATE),
+                format!("--device={}", device),
+            ],
+        ))
+    } else if which_exists("pw-cat") {
+        // pw-cat uses PipeWire node names
+        let mut args = vec![
+            "--format".to_string(),
+            "f32".to_string(),
+            "--channels".to_string(),
+            CHANNELS.to_string(),
+            "--rate".to_string(),
+            SAMPLE_RATE.to_string(),
+            "-r".to_string(), // record mode
+        ];
+
+        match source {
+            CaptureSource::BluetoothDirect(name) | CaptureSource::NullSink(name) => {
+                args.push("--target".to_string());
+                args.push(name.clone());
+            }
+            CaptureSource::Default => {
+                // No --target: pw-cat records from default source
+            }
+        }
+
+        args.push("-".to_string()); // output to stdout
+
+        Ok(("pw-cat", args))
+    } else {
+        Err("Neither parec nor pw-cat found".to_string())
+    }
+}
+
+/// Search for active Bluetooth audio sources.
+/// Tries pactl first, then PipeWire-native pw-cli/pw-dump.
 async fn find_bluetooth_source() -> Option<String> {
+    // Method 1: pactl (PulseAudio compat)
+    if which_exists("pactl") {
+        if let Some(src) = find_bt_source_pactl().await {
+            return Some(src);
+        }
+    }
+
+    // Method 2: pw-cli (PipeWire native)
+    if which_exists("pw-cli") {
+        if let Some(src) = find_bt_source_pwcli().await {
+            return Some(src);
+        }
+    }
+
+    // Method 3: pw-dump (PipeWire JSON dump)
+    if which_exists("pw-dump") {
+        if let Some(src) = find_bt_source_pwdump().await {
+            return Some(src);
+        }
+    }
+
+    None
+}
+
+/// Find Bluetooth source via pactl.
+async fn find_bt_source_pactl() -> Option<String> {
     let output = Command::new("pactl")
         .args(["list", "short", "sources"])
         .output()
@@ -205,12 +255,47 @@ async fn find_bluetooth_source() -> Option<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    find_bt_name_in_listing(&stdout)
+}
+
+/// Find Bluetooth source via pw-cli.
+async fn find_bt_source_pwcli() -> Option<String> {
+    let output = Command::new("pw-cli")
+        .args(["list-objects"])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // pw-cli list-objects shows node names in its output
+    find_bt_name_in_listing(&stdout)
+}
+
+/// Find Bluetooth source via pw-dump (JSON).
+async fn find_bt_source_pwdump() -> Option<String> {
+    let output = Command::new("pw-dump").output().await.ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Search for bluez node names in the JSON dump
     for line in stdout.lines() {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() >= 2 {
-            let name = fields[1];
-            if name.starts_with("bluez_input.") || name.starts_with("bluez_source.") {
-                return Some(name.to_string());
+        let trimmed = line.trim().trim_matches('"').trim_matches(',');
+        if is_bt_source_name(trimmed) {
+            return Some(trimmed.to_string());
+        }
+        // Also check for "node.name" = "bluez_input.*" patterns
+        if line.contains("node.name") {
+            if let Some(name) = extract_json_string_value(line) {
+                if is_bt_source_name(&name) {
+                    return Some(name);
+                }
             }
         }
     }
@@ -218,20 +303,67 @@ async fn find_bluetooth_source() -> Option<String> {
     None
 }
 
-/// Check if a PulseAudio source exists.
-async fn source_exists(name: &str) -> bool {
-    let output = Command::new("pactl")
-        .args(["list", "short", "sources"])
-        .output()
-        .await;
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().any(|line| line.contains(name))
+/// Check if a given node exists in PipeWire.
+async fn node_exists(name: &str) -> bool {
+    // Try pactl first
+    if which_exists("pactl") {
+        let output = Command::new("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+            .await;
+        if let Ok(out) = output {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains(name) {
+                    return true;
+                }
+            }
         }
-        _ => false,
     }
+
+    // Try pw-cli
+    if which_exists("pw-cli") {
+        let output = Command::new("pw-cli").args(["list-objects"]).output().await;
+        if let Ok(out) = output {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains(name) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if a name looks like a Bluetooth audio source.
+fn is_bt_source_name(name: &str) -> bool {
+    name.starts_with("bluez_input.") || name.starts_with("bluez_source.")
+}
+
+/// Find a Bluetooth source name in a text listing (works for both pactl and pw-cli output).
+fn find_bt_name_in_listing(text: &str) -> Option<String> {
+    for line in text.lines() {
+        for word in line.split_whitespace() {
+            if is_bt_source_name(word) {
+                return Some(word.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract a string value from a JSON-like line: `"key": "value"` → `value`
+fn extract_json_string_value(line: &str) -> Option<String> {
+    let parts: Vec<&str> = line.splitn(2, ':').collect();
+    if parts.len() == 2 {
+        let val = parts[1].trim().trim_matches('"').trim_matches(',').trim();
+        if !val.is_empty() {
+            return Some(val.to_string());
+        }
+    }
+    None
 }
 
 fn which_exists(cmd: &str) -> bool {
