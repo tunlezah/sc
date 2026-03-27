@@ -387,13 +387,15 @@ build_soundsync() {
 create_service() {
     log "Creating systemd service..."
 
-    # Create service user if needed
-    if ! id "${SERVICE_USER}" &>/dev/null; then
-        useradd --system --shell /usr/sbin/nologin --groups audio,bluetooth "${SERVICE_USER}"
-        log "Created user ${SERVICE_USER}"
-    else
-        usermod -aG audio,bluetooth "${SERVICE_USER}" 2>/dev/null || true
-    fi
+    # Use the real user who invoked sudo (not root, not a separate service user).
+    # PipeWire and WirePlumber are per-user services — SoundSync MUST run as
+    # the same user to share the audio session and see Bluetooth audio nodes.
+    local RUN_USER="${SUDO_USER:-$(whoami)}"
+    local RUN_UID
+    RUN_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
+
+    # Ensure user is in audio and bluetooth groups
+    usermod -aG audio,bluetooth "${RUN_USER}" 2>/dev/null || true
 
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
@@ -402,11 +404,12 @@ After=bluetooth.service pipewire.service avahi-daemon.service
 
 [Service]
 Type=simple
-User=${SERVICE_USER}
+User=${RUN_USER}
 Group=audio
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/soundsync
-Environment=XDG_RUNTIME_DIR=/run/user/$(id -u "${SERVICE_USER}" 2>/dev/null || echo "1000")
+Environment=XDG_RUNTIME_DIR=/run/user/${RUN_UID}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus
 Environment=RUST_LOG=info
 Restart=on-failure
 RestartSec=5
@@ -415,7 +418,11 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+    # Enable linger so PipeWire persists when no login session is active
+    loginctl enable-linger "${RUN_USER}" 2>/dev/null || warn "Could not enable-linger for ${RUN_USER}"
+
     systemctl daemon-reload
+    log "Service will run as user '${RUN_USER}' (UID ${RUN_UID})"
     log "Service file created at ${SERVICE_FILE}"
 }
 
@@ -424,11 +431,12 @@ EOF
 # -------------------------------------------------------------------
 setup_xdg() {
     log "Setting up XDG_RUNTIME_DIR..."
-    loginctl enable-linger "${SERVICE_USER}" 2>/dev/null || warn "Could not enable-linger for ${SERVICE_USER}"
+    local RUN_USER="${SUDO_USER:-$(whoami)}"
+    loginctl enable-linger "${RUN_USER}" 2>/dev/null || warn "Could not enable-linger for ${RUN_USER}"
     local uid
-    uid=$(id -u "${SERVICE_USER}" 2>/dev/null || echo "1000")
+    uid=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
     mkdir -p "/run/user/${uid}"
-    chown "${SERVICE_USER}:${SERVICE_USER}" "/run/user/${uid}" 2>/dev/null || true
+    chown "${RUN_USER}:${RUN_USER}" "/run/user/${uid}" 2>/dev/null || true
 }
 
 # -------------------------------------------------------------------

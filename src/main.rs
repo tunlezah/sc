@@ -108,10 +108,14 @@ async fn main() {
         manager.run(airplay_cmd_rx).await;
     });
 
-    // Start Bluetooth manager. The oneshot channel receives the D-Bus connection
-    // after adapter setup so the pairing agent stays registered. We no longer
-    // register custom A2DP endpoints — WirePlumber handles codec negotiation and
-    // transport acquisition, creating PipeWire audio nodes automatically.
+    // Start Bluetooth manager and register A2DP endpoints on the same D-Bus connection.
+    // A oneshot channel passes the connection back after adapter setup completes,
+    // ensuring endpoints register only after the adapter is powered on and the agent
+    // is registered, and that both share the same D-Bus unique name.
+    //
+    // Our A2DP endpoints handle state tracking (device state → AudioActive, codec info,
+    // AVRCP activation). WirePlumber independently monitors BlueZ for transports and
+    // acquires them to create PipeWire audio nodes (bluez_input.*). Both coexist.
     let (conn_tx, conn_rx) = tokio::sync::oneshot::channel::<zbus::Connection>();
     let bt_state = state.clone();
     let adapter_name = state.state.read().await.config.adapter.clone();
@@ -120,19 +124,31 @@ async fn main() {
         bt_manager.run().await;
     });
 
-    // Do NOT register custom A2DP endpoints — let WirePlumber handle codec
-    // negotiation and transport acquisition natively. Custom endpoints override
-    // WirePlumber's, preventing it from acquiring the transport and creating
-    // PipeWire audio nodes (bluez_input.*), which means no audio flows.
-    //
-    // WirePlumber automatically:
-    // - Registers its own A2DP endpoints with BlueZ
-    // - Negotiates codecs (SBC, AAC, etc.)
-    // - Acquires the transport file descriptor
-    // - Creates bluez_input.*/bluez_source.* PipeWire nodes
-    //
-    // We detect the active codec from BlueZ transport properties instead.
-    let _conn_rx = conn_rx; // keep oneshot alive; agent stays registered
+    // Register A2DP endpoints once the Bluetooth manager is ready.
+    let endpoint_state = state.clone();
+    let endpoint_adapter = adapter_name.clone();
+    tokio::spawn(async move {
+        match conn_rx.await {
+            Ok(connection) => {
+                if let Err(e) = bluetooth::endpoint::register_endpoints(
+                    &connection,
+                    endpoint_state,
+                    &endpoint_adapter,
+                )
+                .await
+                {
+                    warn!("Failed to register A2DP endpoints: {}", e);
+                    info!("A2DP codec negotiation will not be available");
+                }
+                // Keep the connection (and its D-Bus objects) alive for the
+                // lifetime of the application so BlueZ can call our endpoints.
+                futures::future::pending::<()>().await;
+            }
+            Err(_) => {
+                warn!("Bluetooth manager shut down before sending D-Bus connection");
+            }
+        }
+    });
 
     // Start AVRCP monitor
     let avrcp_monitor = AvrcpMonitor::new(state.clone(), avrcp_cmd_rx, adapter_name.clone());
