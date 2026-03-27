@@ -305,15 +305,14 @@ Download the latest release binary from the [Actions tab](../../actions) artifac
 
 ## Changelog
 
-### v2.4.0
+### v2.5.0
 
-- **Fix Audio Pipeline** — set null sink as default PipeWire sink so Bluetooth A2DP audio is routed to the capture pipeline instead of system speakers. This was the root cause of no audio reaching the browser or spectrum visualizer.
-- **AAC-LC Streaming** — switched Chromecast/HTTP stream from MP3 to AAC-LC 256 kbps in ADTS container via FFmpeg, providing universal compatibility across Safari, Chrome, Chromecast, and AirPlay. Automatic fallback to MP3 if FFmpeg is unavailable.
-- **Dual Stream Endpoints** — `/api/stream/audio.aac` (primary, AAC-LC 256 kbps) and `/api/stream/audio.mp3` (legacy, MP3 192 kbps)
-- **Pipeline Resilience** — filter-chain (EQ) failure no longer aborts audio capture; audio continues without EQ processing
-- **Fix parec Fallback** — corrected `--monitor-stream` to `--device` flag for parec audio capture source selection
-- **Broadcast Buffer** — increased from 16 to 64 frames (320ms → 1.28s) to reduce frame skipping under load
-- **Install Script** — added ffmpeg dependency, synced version to 2.4.0
+- **Fix Bluetooth Audio** — disabled custom A2DP endpoint registration that was overriding WirePlumber's native codec negotiation and transport acquisition. WirePlumber now handles A2DP end-to-end, creating `bluez_input.*` PipeWire audio nodes automatically.
+- **PipeWire-Native Pipeline** — null sink creation and default sink setting now work without `pactl` using `pw-loopback` and `wpctl` as fallbacks. Capture uses 3-tier source resolution: Bluetooth source direct → null sink → default monitor.
+- **AAC-LC Streaming** — switched Chromecast/HTTP stream from MP3 to AAC-LC 256 kbps in ADTS container via FFmpeg, with automatic MP3 fallback.
+- **Dual Stream Endpoints** — `/api/stream/audio.aac` (primary) and `/api/stream/audio.mp3` (legacy)
+- **Pipeline Resilience** — filter-chain (EQ) failure no longer aborts audio capture; parec preferred over pw-cat; stderr logged instead of discarded
+- **Install Script** — added `pulseaudio-utils` and `ffmpeg` dependencies
 
 ### v2.3.0
 
