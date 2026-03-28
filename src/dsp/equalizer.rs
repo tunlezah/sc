@@ -128,6 +128,10 @@ pub fn generate_filter_chain_config(bands: &[EqBand]) -> String {
         }
     }
 
+    // Determine first and last band names for inputs/outputs
+    let first_band = "eq_band_0";
+    let last_band = format!("eq_band_{}", bands.len().saturating_sub(1));
+
     format!(
         r#"# PipeWire filter-chain for 10-band parametric EQ (auto-generated)
 context.modules = [
@@ -135,22 +139,28 @@ context.modules = [
         args = {{
             node.name = "soundsync-eq"
             node.description = "SoundSync Equalizer"
+            media.name = "SoundSync EQ"
             capture.props = {{
                 node.name = "effect_input.soundsync-eq"
                 media.class = "Audio/Sink"
                 audio.rate = 48000
                 audio.channels = 2
-                audio.position = "FL,FR"
+                audio.position = [ FL FR ]
             }}
             playback.props = {{
                 node.name = "effect_output.soundsync-eq"
+                media.class = "Stream/Output/Audio"
                 node.target = "soundsync-capture"
+                audio.channels = 2
+                audio.position = [ FL FR ]
             }}
             filter.graph = {{
                 nodes = [
 {nodes}                ]
                 links = [
 {links}                ]
+                inputs  = [ "{first_band}:In" ]
+                outputs = [ "{last_band}:Out" ]
             }}
         }}
     }}
@@ -233,9 +243,12 @@ mod tests {
         assert!(config.contains("bq_highshelf"));
         assert!(config.contains("eq_band_0"));
         assert!(config.contains("eq_band_9"));
-        // Should have 9 links (bands 0→1, 1→2, ... 8→9)
-        assert_eq!(config.matches("eq_band_0:Out").count(), 1);
-        assert_eq!(config.matches("eq_band_9:In").count(), 1);
+        // Should have 9 links (bands 0→1, 1→2, ... 8→9) plus inputs/outputs
+        assert_eq!(config.matches("eq_band_0:Out").count(), 1); // in links only
+        assert_eq!(config.matches("eq_band_9:In").count(), 1); // in links only
+        // inputs/outputs fields reference first and last bands
+        assert!(config.contains("inputs  = [ \"eq_band_0:In\" ]"));
+        assert!(config.contains("outputs = [ \"eq_band_9:Out\" ]"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::audio::capture::AudioCapture;
@@ -6,8 +7,21 @@ use crate::audio::filter_chain::FilterChainManager;
 use crate::dsp::equalizer::EqBand;
 use crate::state::{AppStateHandle, SystemEvent};
 
+/// Commands for the audio pipeline (EQ updates).
+#[derive(Debug)]
+pub enum PipelineCommand {
+    /// Update EQ bands and enabled state.
+    UpdateEq {
+        bands: Vec<EqBand>,
+        enabled: bool,
+    },
+}
+
 const NULL_SINK_NAME: &str = "soundsync-capture";
 const NULL_SINK_DESC: &str = "SoundSync-Capture";
+/// The EQ filter-chain creates this sink. When EQ is enabled, this must be the
+/// default sink so Bluetooth audio flows: BT → EQ → soundsync-capture → capture.
+const EQ_SINK_NAME: &str = "effect_input.soundsync-eq";
 
 /// Manages the entire audio pipeline: null sink, filter-chain, and capture.
 pub struct AudioPipeline {
@@ -34,23 +48,43 @@ impl AudioPipeline {
     ///
     /// The filter-chain (EQ) is non-fatal: if it fails to start, audio capture
     /// still proceeds without EQ processing.
+    ///
+    /// Audio routing when EQ is enabled:
+    ///   BT → effect_input.soundsync-eq (default sink)
+    ///        → EQ filter-chain
+    ///        → effect_output.soundsync-eq
+    ///        → soundsync-capture (node.target)
+    ///        → soundsync-capture.monitor → capture
+    ///
+    /// Audio routing when EQ is disabled/unavailable:
+    ///   BT → soundsync-capture (default sink)
+    ///        → soundsync-capture.monitor → capture
     pub async fn initialize(&mut self, bands: &[EqBand]) -> Result<(), String> {
         // Create null sink for monitoring/capture
         self.create_null_sink().await?;
 
-        // Set as default so Bluetooth A2DP audio routes here
-        self.set_default_sink().await;
-
-        // Start filter-chain with initial EQ (non-fatal)
+        // Start filter-chain with initial EQ (non-fatal).
+        // If successful, set the EQ input as default sink so BT audio flows
+        // through the EQ before reaching the null sink.
         match self.filter_chain.apply_eq(bands).await {
-            Ok(()) => info!("Filter-chain (EQ) started"),
-            Err(e) => warn!(
-                "Filter-chain (EQ) unavailable: {} — audio will bypass EQ",
-                e
-            ),
+            Ok(()) => {
+                info!("Filter-chain (EQ) started");
+                // Give filter-chain a moment to register its nodes
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // Set EQ input as default sink so BT audio goes through EQ
+                self.set_default_sink_to(EQ_SINK_NAME).await;
+            }
+            Err(e) => {
+                warn!(
+                    "Filter-chain (EQ) unavailable: {} — audio will bypass EQ",
+                    e
+                );
+                // Fall back to null sink as default
+                self.set_default_sink_to(NULL_SINK_NAME).await;
+            }
         }
 
-        // Start audio capture from the null sink
+        // Start audio capture from the null sink (always captures EQ-processed output)
         self.capture.start(NULL_SINK_NAME).await?;
 
         let mut app = self.state.state.write().await;
@@ -165,26 +199,29 @@ impl AudioPipeline {
         Ok(())
     }
 
-    /// Set the null sink as default so Bluetooth A2DP audio routes here.
-    async fn set_default_sink(&self) {
+    /// Set the specified sink as the default so Bluetooth A2DP audio routes there.
+    ///
+    /// When EQ is enabled, this should be `effect_input.soundsync-eq` so audio
+    /// passes through the EQ filter-chain before reaching `soundsync-capture`.
+    /// When EQ is disabled, this should be `soundsync-capture` directly.
+    async fn set_default_sink_to(&self, sink_name: &str) {
         if which_exists("pactl") {
             let result = Command::new("pactl")
-                .args(["set-default-sink", NULL_SINK_NAME])
+                .args(["set-default-sink", sink_name])
                 .output()
                 .await;
             match result {
                 Ok(out) if out.status.success() => {
-                    info!("Default sink set to {} via pactl", NULL_SINK_NAME);
+                    info!("Default sink set to {} via pactl", sink_name);
                 }
                 Ok(out) => {
                     let stderr = String::from_utf8_lossy(&out.stderr);
-                    warn!("pactl set-default-sink failed: {}", stderr);
+                    warn!("pactl set-default-sink {} failed: {}", sink_name, stderr);
                 }
                 Err(e) => warn!("Failed to run pactl: {}", e),
             }
         } else if which_exists("wpctl") {
-            // Use wpctl (WirePlumber) to set default sink
-            self.set_default_sink_wpctl().await;
+            self.set_default_sink_wpctl(sink_name).await;
         } else {
             warn!("Neither pactl nor wpctl available — cannot set default sink");
         }
@@ -192,14 +229,13 @@ impl AudioPipeline {
 
     /// Set default sink via wpctl (WirePlumber).
     /// Finds the node ID by name, then sets it as default.
-    async fn set_default_sink_wpctl(&self) {
-        // Find the node ID for our null sink
+    async fn set_default_sink_wpctl(&self, sink_name: &str) {
         let status = Command::new("wpctl").args(["status"]).output().await;
 
         let node_id = match status {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                find_wpctl_node_id(&stdout, NULL_SINK_NAME)
+                find_wpctl_node_id(&stdout, sink_name)
             }
             _ => None,
         };
@@ -213,7 +249,7 @@ impl AudioPipeline {
                 Ok(out) if out.status.success() => {
                     info!(
                         "Default sink set to {} (ID {}) via wpctl",
-                        NULL_SINK_NAME, id
+                        sink_name, id
                     );
                 }
                 _ => warn!("wpctl set-default failed for ID {}", id),
@@ -221,19 +257,24 @@ impl AudioPipeline {
         } else {
             warn!(
                 "Could not find {} in wpctl status — default sink not set",
-                NULL_SINK_NAME
+                sink_name
             );
         }
     }
 
-    /// Update the EQ bands (kills and respawns the filter-chain).
-    #[allow(dead_code)]
+    /// Update the EQ bands (kills and respawns the filter-chain) and re-route
+    /// the default sink accordingly.
     pub async fn update_eq(&mut self, bands: &[EqBand], enabled: bool) -> Result<(), String> {
         if enabled {
             self.filter_chain.apply_eq(bands).await?;
+            // Give filter-chain a moment to register its nodes
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Route BT audio through EQ
+            self.set_default_sink_to(EQ_SINK_NAME).await;
         } else {
-            // Bypass: stop filter-chain, audio goes directly to output
+            // Bypass: stop filter-chain, route BT audio directly to null sink
             self.filter_chain.stop().await;
+            self.set_default_sink_to(NULL_SINK_NAME).await;
         }
 
         let mut app = self.state.state.write().await;
@@ -247,6 +288,24 @@ impl AudioPipeline {
         });
 
         Ok(())
+    }
+
+    /// Run the pipeline command loop. Processes EQ update commands from the
+    /// web API. Must be spawned as a task. The pipeline is consumed and runs
+    /// until the command channel is closed.
+    pub async fn run(mut self, mut cmd_rx: mpsc::Receiver<PipelineCommand>) {
+        info!("Audio pipeline command loop started");
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                PipelineCommand::UpdateEq { bands, enabled } => {
+                    if let Err(e) = self.update_eq(&bands, enabled).await {
+                        warn!("EQ update failed: {}", e);
+                    }
+                }
+            }
+        }
+        info!("Audio pipeline command loop ended, shutting down");
+        self.shutdown().await;
     }
 
     /// Get the audio capture broadcast receiver for spectrum analysis / WebRTC.

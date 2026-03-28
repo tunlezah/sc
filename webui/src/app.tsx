@@ -23,7 +23,7 @@ export function App() {
       />
 
       <div class="left-column">
-        <SpectrumVisualizer bands={spectrum} dark={dark} />
+        <SpectrumVisualizer bands={spectrum} dark={dark} artworkUrl={state.track_info?.artwork_url} />
 
         <MediaControls
           trackInfo={state.track_info}

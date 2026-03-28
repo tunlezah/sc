@@ -306,6 +306,15 @@ Download the latest release binary from the [Actions tab](../../actions) artifac
 
 ## Changelog
 
+### v2.7.0
+
+- **Fix EQ Pipeline Routing** — EQ filter-chain was orphaned: audio bypassed it because the default sink was `soundsync-capture` instead of `effect_input.soundsync-eq`. The EQ input is now set as the default sink when EQ is enabled, routing Bluetooth audio through the 10-band parametric EQ before capture.
+- **Fix Audio Capture Priority** — capture source resolution previously tried `bluez_input.*` first, bypassing both the null sink and EQ entirely. Capture now always reads from `soundsync-capture.monitor` to receive EQ-processed audio.
+- **Wire Up EQ Updates** — EQ changes from the web UI now restart the `pipewire-filter-chain` subprocess via a new `PipelineCommand` channel. Previously, `update_eq()` was dead code and EQ changes only updated the UI state without affecting the audio.
+- **Filter-Chain Config Improvements** — added `inputs`/`outputs` fields, `media.class = "Stream/Output/Audio"` on playback props, and `audio.channels`/`audio.position` on both capture and playback to match PipeWire best practices.
+- **Album Artwork Support** — AVRCP cover art extraction (when available via BlueZ), served at `/api/artwork` endpoint. Artwork renders as a subtle, blurred, low-opacity background behind the spectrum visualizer. Fails gracefully when artwork is unavailable.
+- **Version Consistency** — all 4 version locations (Cargo.toml, package.json, version.ts, install.sh) updated together.
+
 ### v2.5.0
 
 - **Fix Bluetooth Audio** — disabled custom A2DP endpoint registration that was overriding WirePlumber's native codec negotiation and transport acquisition. WirePlumber now handles A2DP end-to-end, creating `bluez_input.*` PipeWire audio nodes automatically.

@@ -3,9 +3,10 @@ import { useRef, useEffect } from 'preact/hooks';
 interface SpectrumVisualizerProps {
   bands: number[];
   dark: boolean;
+  artworkUrl?: string;
 }
 
-export function SpectrumVisualizer({ bands, dark }: SpectrumVisualizerProps) {
+export function SpectrumVisualizer({ bands, dark, artworkUrl }: SpectrumVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
   const bandsRef = useRef<number[]>(bands);
@@ -85,8 +86,24 @@ export function SpectrumVisualizer({ bands, dark }: SpectrumVisualizerProps) {
   }, [dark]);
 
   return (
-    <div class="card spectrum-card">
-      <div class="spectrum-container">
+    <div class="card spectrum-card" style={{ position: 'relative', overflow: 'hidden' }}>
+      {artworkUrl && (
+        <div
+          class="spectrum-artwork-bg"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundImage: `url(${artworkUrl})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            filter: 'blur(30px) saturate(0.5)',
+            opacity: dark ? 0.08 : 0.06,
+            zIndex: 0,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+      <div class="spectrum-container" style={{ position: 'relative', zIndex: 1 }}>
         <canvas ref={canvasRef} class="spectrum-canvas" />
       </div>
     </div>
