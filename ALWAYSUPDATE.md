@@ -117,20 +117,26 @@ The audio pipeline depends on PipeWire and its ecosystem:
 The system acts as a Bluetooth A2DP **sink** (receives audio, like a speaker). This requires:
 
 1. **BlueZ** agent registered for auto-pairing (`src/bluetooth/agent.rs`)
-2. **A2DP endpoints** registered with BlueZ for codec negotiation and state tracking (`src/bluetooth/endpoint.rs`)
-3. **WirePlumber** with `libspa-0.2-bluetooth` — monitors BlueZ transports, acquires them, creates `bluez_input.*` PipeWire audio nodes
-4. **PipeWire** routing from the Bluetooth source to the capture null sink
+2. **WirePlumber** with `libspa-0.2-bluetooth` — handles codec negotiation, transport acquisition, and creates `bluez_input.*` PipeWire audio nodes
+3. **PipeWire** routing from the Bluetooth source to the capture null sink
 
-Both our A2DP endpoints AND WirePlumber coexist:
-- Our endpoints: handle `SetConfiguration`/`ClearConfiguration` callbacks for device state tracking (AudioActive, codec info)
-- WirePlumber: independently acquires transports and creates PipeWire audio nodes
+**Custom A2DP endpoints MUST NOT be registered.** The code in `src/bluetooth/endpoint.rs`
+is kept for reference but is not used. Registering custom MediaEndpoint1 objects with BlueZ
+causes BlueZ to assign A2DP transports to our endpoints instead of WirePlumber's. Since our
+endpoints never call `Acquire()`, WirePlumber sees the transport as "unknown" and cannot
+create `bluez_input.*` audio nodes. This results in WirePlumber logging
+"Properties changed in unknown transport" and no audio flowing.
+
+Instead, device state transitions to `AudioActive` are detected by polling for
+`bluez_input.*` / `bluez_source.*` PipeWire sources via `pactl` in the Bluetooth
+manager's `poll_device_properties()` method.
 
 ### AVRCP
 
 The AVRCP monitor (`src/bluetooth/avrcp.rs`) polls BlueZ for playback status and
-track metadata. It depends on the A2DP endpoints being registered because
-`SetConfiguration` sets the device state to `AudioActive`, which AVRCP uses to
-know which device to monitor.
+track metadata. It depends on the device state being set to `AudioActive`, which
+the Bluetooth manager now detects by polling for `bluez_input.*` PipeWire sources
+(previously this was set by the now-disabled A2DP endpoint `SetConfiguration` callback).
 
 ## Diagnostic Commands
 
@@ -157,7 +163,8 @@ echo -e "\n=== BT SPA Plugin ===" && find /usr/lib -name "spa-0.2" -type d 2>/de
 2. **pactl/parec not found**: `pulseaudio-utils` not installed
 3. **No BT audio node**: WirePlumber A2DP sink config missing
 4. **Null sink not created / capture silent**: Service running as wrong user (different PipeWire session)
-5. **AVRCP metadata missing**: A2DP endpoints not registered (they set device state)
+5. **AVRCP metadata missing**: Device never reaches `AudioActive` state (check `pactl list short sources` for `bluez_input.*`)
 6. **pw-cat --target fails**: Use PipeWire node names, not PulseAudio names
 7. **OS version in build**: Never use `$(uname -r)` or env vars for app version
 8. **Version not updated**: Check ALL locations listed above
+9. **"Unknown transport" in WirePlumber logs**: Custom A2DP MediaEndpoint1 objects are registered with BlueZ, stealing transports from WirePlumber. Do NOT register custom A2DP endpoints — WirePlumber must own the transports to create audio nodes. See `src/main.rs` comment.

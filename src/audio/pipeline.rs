@@ -79,30 +79,61 @@ impl AudioPipeline {
     }
 
     /// Create null sink via pactl (PulseAudio compatibility layer).
+    /// Retries up to 5 times with 1s delays since pipewire-pulse may not be ready.
     async fn create_null_sink_pactl(&mut self) -> Result<(), String> {
-        let output = Command::new("pactl")
-            .args([
-                "load-module",
-                "module-null-sink",
-                &format!("sink_name={}", NULL_SINK_NAME),
-                &format!("sink_properties=device.description={}", NULL_SINK_DESC),
-            ])
+        const MAX_ATTEMPTS: u32 = 5;
+        let mut last_err = String::new();
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let output = Command::new("pactl")
+                .args([
+                    "load-module",
+                    "module-null-sink",
+                    &format!("sink_name={}", NULL_SINK_NAME),
+                    &format!("sink_properties=device.description={}", NULL_SINK_DESC),
+                ])
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run pactl: {}", e))?;
+
+            if output.status.success() {
+                let id_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if let Ok(id) = id_str.parse::<u32>() {
+                    self.null_sink_module_id = Some(id);
+                    info!("Null sink created via pactl with module ID {}", id);
+                }
+                break;
+            }
+
+            last_err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if attempt < MAX_ATTEMPTS {
+                warn!(
+                    "pactl load-module attempt {}/{} failed: {} — retrying in 1s",
+                    attempt, MAX_ATTEMPTS, last_err
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+
+        // Verify the sink actually exists
+        let verify = Command::new("pactl")
+            .args(["list", "short", "sinks"])
             .output()
             .await
-            .map_err(|e| format!("Failed to run pactl: {}", e))?;
+            .map_err(|e| format!("Failed to run pactl for verification: {}", e))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("pactl load-module failed: {}", stderr));
+        if verify.status.success() {
+            let stdout = String::from_utf8_lossy(&verify.stdout);
+            if stdout.contains(NULL_SINK_NAME) {
+                info!("Verified null sink {} exists", NULL_SINK_NAME);
+                return Ok(());
+            }
         }
 
-        let id_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if let Ok(id) = id_str.parse::<u32>() {
-            self.null_sink_module_id = Some(id);
-            info!("Null sink created via pactl with module ID {}", id);
-        }
-
-        Ok(())
+        Err(format!(
+            "Null sink {} not found after {} attempts. Last error: {}",
+            NULL_SINK_NAME, MAX_ATTEMPTS, last_err
+        ))
     }
 
     /// Create null sink via pw-loopback (PipeWire native).

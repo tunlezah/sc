@@ -104,7 +104,8 @@ install_dependencies() {
     apt-get update -qq
     apt-get install -y -qq \
         bluetooth bluez \
-        pipewire pipewire-pulse wireplumber pulseaudio-utils \
+        pipewire pipewire-pulse pipewire-audio pipewire-alsa wireplumber pulseaudio-utils \
+        bluez-tools \
         libspa-0.2-bluetooth \
         libdbus-1-dev libpipewire-0.3-dev libspa-0.2-dev \
         libclang-dev libopus-dev libmp3lame-dev pkg-config build-essential \
@@ -176,6 +177,12 @@ configure_wireplumber() {
     local WP_VERSION
     WP_VERSION=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "0.4")
 
+    # User config directory (preferred — works without root WirePlumber restart)
+    local RUN_USER="${SUDO_USER:-$(whoami)}"
+    local USER_HOME
+    USER_HOME=$(eval echo "~${RUN_USER}")
+    local WP_USER_LUA_DIR="${USER_HOME}/.config/wireplumber/bluetooth.lua.d"
+
     if [[ -d "/etc/wireplumber/wireplumber.conf.d" ]] || dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
         # WirePlumber 0.5+ (SPA JSON config)
         mkdir -p "${WP_CONF_DIR}"
@@ -193,9 +200,11 @@ WPCONF
         log "WirePlumber 0.5+ config written to ${WP_CONF_DIR}/51-soundsync.conf"
     else
         # WirePlumber 0.4.x (Lua config)
-        mkdir -p "${WP_LUA_DIR}"
-        cat > "${WP_LUA_DIR}/51-soundsync.lua" << 'WPLUA'
+        # Write to user config dir (preferred)
+        mkdir -p "${WP_USER_LUA_DIR}"
+        cat > "${WP_USER_LUA_DIR}/51-soundsync-a2dp.lua" << 'WPLUA'
 -- SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
+bluez_monitor.enabled = true
 bluez_monitor.properties = {
     ["bluez5.roles"] = "[ a2dp_sink ]",
     ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
@@ -204,12 +213,28 @@ bluez_monitor.properties = {
     ["bluez5.enable-hw-volume"] = true,
 }
 WPLUA
-        log "WirePlumber 0.4.x config written to ${WP_LUA_DIR}/51-soundsync.lua"
+        chown -R "${RUN_USER}:${RUN_USER}" "${USER_HOME}/.config/wireplumber" 2>/dev/null || true
+        log "WirePlumber 0.4.x user config written to ${WP_USER_LUA_DIR}/51-soundsync-a2dp.lua"
+
+        # Also write to /etc/ as fallback
+        mkdir -p "${WP_LUA_DIR}"
+        cat > "${WP_LUA_DIR}/51-soundsync.lua" << 'WPLUA'
+-- SoundSync: Enable A2DP sink role (fallback system-wide config)
+bluez_monitor.enabled = true
+bluez_monitor.properties = {
+    ["bluez5.roles"] = "[ a2dp_sink ]",
+    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
+    ["bluez5.enable-sbc-xq"] = true,
+    ["bluez5.enable-msbc"] = false,
+    ["bluez5.enable-hw-volume"] = true,
+}
+WPLUA
+        log "WirePlumber 0.4.x fallback config written to ${WP_LUA_DIR}/51-soundsync.lua"
     fi
 
     # Restart WirePlumber to pick up the new config
     systemctl --user restart wireplumber 2>/dev/null || \
-        su - "${SERVICE_USER}" -s /bin/bash -c "systemctl --user restart wireplumber" 2>/dev/null || \
+        su - "${RUN_USER}" -s /bin/bash -c "systemctl --user restart wireplumber" 2>/dev/null || \
         warn "Could not restart WirePlumber — reboot may be needed"
 }
 
@@ -401,6 +426,7 @@ create_service() {
 [Unit]
 Description=SoundSync Bluetooth Audio Receiver
 After=bluetooth.service pipewire.service avahi-daemon.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
 
 [Service]
 Type=simple
@@ -410,6 +436,7 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/soundsync
 Environment=XDG_RUNTIME_DIR=/run/user/${RUN_UID}
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus
+Environment=PULSE_RUNTIME_PATH=/run/user/${RUN_UID}/pulse
 Environment=RUST_LOG=info
 Restart=on-failure
 RestartSec=5
@@ -430,13 +457,20 @@ EOF
 # 6. XDG_RUNTIME_DIR setup
 # -------------------------------------------------------------------
 setup_xdg() {
-    log "Setting up XDG_RUNTIME_DIR..."
+    log "Setting up XDG_RUNTIME_DIR and PipeWire user services..."
     local RUN_USER="${SUDO_USER:-$(whoami)}"
     loginctl enable-linger "${RUN_USER}" 2>/dev/null || warn "Could not enable-linger for ${RUN_USER}"
     local uid
     uid=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
     mkdir -p "/run/user/${uid}"
     chown "${RUN_USER}:${RUN_USER}" "/run/user/${uid}" 2>/dev/null || true
+
+    # Ensure PipeWire and WirePlumber are enabled as user services
+    # (they must be running for SoundSync to create sinks, capture audio, etc.)
+    su - "${RUN_USER}" -s /bin/bash -c "
+        systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
+        systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
+    " || warn "Could not enable PipeWire user services — they may already be enabled"
 }
 
 # -------------------------------------------------------------------

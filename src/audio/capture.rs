@@ -183,6 +183,7 @@ fn build_capture_command(source: &CaptureSource) -> Result<(&'static str, Vec<St
                 format!("--channels={}", CHANNELS),
                 format!("--rate={}", SAMPLE_RATE),
                 format!("--device={}", device),
+                "--latency-msec=20".to_string(),
             ],
         ))
     } else if which_exists("pw-cat") {

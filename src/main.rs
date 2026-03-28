@@ -108,14 +108,8 @@ async fn main() {
         manager.run(airplay_cmd_rx).await;
     });
 
-    // Start Bluetooth manager and register A2DP endpoints on the same D-Bus connection.
-    // A oneshot channel passes the connection back after adapter setup completes,
-    // ensuring endpoints register only after the adapter is powered on and the agent
-    // is registered, and that both share the same D-Bus unique name.
-    //
-    // Our A2DP endpoints handle state tracking (device state → AudioActive, codec info,
-    // AVRCP activation). WirePlumber independently monitors BlueZ for transports and
-    // acquires them to create PipeWire audio nodes (bluez_input.*). Both coexist.
+    // Start Bluetooth manager. A oneshot channel passes the D-Bus connection
+    // back after adapter setup completes so we can keep it alive for the agent.
     let (conn_tx, conn_rx) = tokio::sync::oneshot::channel::<zbus::Connection>();
     let bt_state = state.clone();
     let adapter_name = state.state.read().await.config.adapter.clone();
@@ -124,24 +118,16 @@ async fn main() {
         bt_manager.run().await;
     });
 
-    // Register A2DP endpoints once the Bluetooth manager is ready.
-    let endpoint_state = state.clone();
-    let endpoint_adapter = adapter_name.clone();
+    // Keep the D-Bus connection alive (for the BlueZ agent) but do NOT register
+    // custom A2DP endpoints — they conflict with WirePlumber's BlueZ plugin.
+    // WirePlumber handles codec negotiation, transport acquisition, and creates
+    // bluez_input.* PipeWire audio nodes. Custom endpoints steal the transport,
+    // causing WirePlumber to log "unknown transport" errors and never create
+    // audio nodes.
     tokio::spawn(async move {
         match conn_rx.await {
-            Ok(connection) => {
-                if let Err(e) = bluetooth::endpoint::register_endpoints(
-                    &connection,
-                    endpoint_state,
-                    &endpoint_adapter,
-                )
-                .await
-                {
-                    warn!("Failed to register A2DP endpoints: {}", e);
-                    info!("A2DP codec negotiation will not be available");
-                }
-                // Keep the connection (and its D-Bus objects) alive for the
-                // lifetime of the application so BlueZ can call our endpoints.
+            Ok(_connection) => {
+                // Keep connection alive for agent lifetime
                 futures::future::pending::<()>().await;
             }
             Err(_) => {
