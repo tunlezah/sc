@@ -183,7 +183,8 @@ configure_wireplumber() {
     USER_HOME=$(eval echo "~${RUN_USER}")
     local WP_USER_LUA_DIR="${USER_HOME}/.config/wireplumber/bluetooth.lua.d"
 
-    if [[ -d "/etc/wireplumber/wireplumber.conf.d" ]] || dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
+    # Check version FIRST (not directory existence — we may have created the dir ourselves)
+    if dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
         # WirePlumber 0.5+ (SPA JSON config)
         mkdir -p "${WP_CONF_DIR}"
         cat > "${WP_CONF_DIR}/51-soundsync.conf" << 'WPCONF'
