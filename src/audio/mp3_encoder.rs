@@ -1,7 +1,7 @@
 use mp3lame_encoder::{Builder, Encoder, FlushNoGap, InterleavedPcm};
 use tracing::warn;
 
-/// Wraps the `mp3lame-encoder` crate for 48 kHz stereo at 192 kbps CBR.
+/// Wraps the `mp3lame-encoder` crate for 48 kHz stereo at 256 kbps CBR.
 ///
 /// Each call to `encode_frame` expects interleaved f32 PCM samples
 /// (960 samples per channel = 1920 values total for a 20 ms frame at 48 kHz).
@@ -22,7 +22,7 @@ impl Mp3Encoder {
             .set_num_channels(2)
             .map_err(|e| format!("MP3 set channels error: {:?}", e))?;
         builder
-            .set_brate(mp3lame_encoder::Bitrate::Kbps192)
+            .set_brate(mp3lame_encoder::Bitrate::Kbps256)
             .map_err(|e| format!("MP3 set bitrate error: {:?}", e))?;
         builder
             .set_quality(mp3lame_encoder::Quality::Best)
