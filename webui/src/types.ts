@@ -37,6 +37,7 @@ export interface TrackInfo {
   album: string;
   duration_ms: number;
   track_number: number | null;
+  artwork_url?: string;
 }
 
 export interface CastDevice {

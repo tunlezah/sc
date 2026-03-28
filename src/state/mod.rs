@@ -118,6 +118,9 @@ pub struct TrackInfo {
     pub album: String,
     pub duration_ms: u64,
     pub track_number: Option<u32>,
+    /// URL path for album artwork (e.g. "/api/artwork"), if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +186,10 @@ pub struct AppState {
     pub cast_active: Option<String>,
     pub airplay_devices: HashMap<String, AirPlayDeviceInfo>,
     pub airplay_active: Option<String>,
+    /// Album artwork bytes (JPEG/PNG), if extracted from AVRCP.
+    pub artwork_data: Option<Vec<u8>>,
+    /// MIME type of the artwork (e.g. "image/jpeg").
+    pub artwork_mime: Option<String>,
 }
 
 impl AppState {
@@ -204,6 +211,8 @@ impl AppState {
             cast_active: None,
             airplay_devices: HashMap::new(),
             airplay_active: None,
+            artwork_data: None,
+            artwork_mime: None,
         }
     }
 

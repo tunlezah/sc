@@ -156,6 +156,68 @@ impl AvrcpMonitor {
         ))
     }
 
+    /// Try to extract album artwork from AVRCP cover art.
+    ///
+    /// BlueZ may expose artwork via:
+    /// - The `Track` dict's `Image` key (some implementations)
+    /// - `org.bluez.MediaItem1` interface
+    /// - `org.bluez.MediaPlayer1` Browsing interface
+    ///
+    /// Returns true if artwork was successfully extracted and stored.
+    async fn try_extract_artwork(
+        connection: &zbus::Connection,
+        player_path: &str,
+        state: &AppStateHandle,
+    ) -> bool {
+        // Method 1: Check for Image/CoverArt in Track properties
+        let proxy = match zbus::Proxy::new(
+            connection,
+            "org.bluez",
+            player_path,
+            "org.bluez.MediaPlayer1",
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+
+        // Try to get cover art properties that some BlueZ builds expose
+        if let Ok(track_map) = proxy
+            .get_property::<HashMap<String, OwnedValue>>("Track")
+            .await
+        {
+            // Some BT implementations provide an Image URL or data
+            if let Some(image_val) = track_map.get("Image") {
+                if let Ok(image_path) = <&str as TryFrom<&OwnedValue>>::try_from(image_val) {
+                    if !image_path.is_empty() {
+                        // If it's a file path, try to read it
+                        if let Ok(data) = tokio::fs::read(image_path).await {
+                            let mime = if image_path.ends_with(".png") {
+                                "image/png"
+                            } else {
+                                "image/jpeg"
+                            };
+                            let mut app = state.state.write().await;
+                            app.artwork_data = Some(data);
+                            app.artwork_mime = Some(mime.to_string());
+                            info!("Album artwork extracted from AVRCP ({})", image_path);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // No artwork available — clear any stale artwork
+        {
+            let mut app = state.state.write().await;
+            app.artwork_data = None;
+            app.artwork_mime = None;
+        }
+        false
+    }
+
     async fn poll_media_player(&mut self, connection: &zbus::Connection) {
         let player_path = match self.get_player_path().await {
             Some(p) => p,
@@ -193,7 +255,7 @@ impl AvrcpMonitor {
             .get_property::<HashMap<String, OwnedValue>>("Track")
             .await
         {
-            let track = parse_track_info(&track_map);
+            let mut track = parse_track_info(&track_map);
             let changed = match (&self.last_track, &track) {
                 (None, None) => false,
                 (Some(_), None) | (None, Some(_)) => true,
@@ -201,6 +263,15 @@ impl AvrcpMonitor {
             };
 
             if changed {
+                // Try to extract album artwork from AVRCP cover art
+                let has_artwork =
+                    Self::try_extract_artwork(connection, &player_path, &self.state).await;
+                if let Some(ref mut t) = track {
+                    if has_artwork {
+                        t.artwork_url = Some("/api/artwork".to_string());
+                    }
+                }
+
                 self.last_track.clone_from(&track);
                 {
                     let mut app = self.state.state.write().await;
@@ -225,6 +296,7 @@ pub fn parse_track_info(map: &HashMap<String, OwnedValue>) -> Option<TrackInfo> 
         album: get_string_value(map, "Album").unwrap_or_default(),
         duration_ms: get_u64_value(map, "Duration").unwrap_or(0),
         track_number: get_u32_value(map, "TrackNumber"),
+        artwork_url: None, // Set later if artwork is available
     })
 }
 

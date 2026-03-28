@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 use crate::audio::airplay::{AirPlayCommand, AirPlayManager};
 use crate::audio::chromecast::{ChromecastCommand, ChromecastManager};
 use crate::audio::line_in::LineInManager;
-use crate::audio::pipeline::AudioPipeline;
+use crate::audio::pipeline::{AudioPipeline, PipelineCommand};
 use crate::audio::spectrum::SpectrumAnalyzer;
 use crate::audio::webrtc_audio::{WebRtcCommand, WebRtcManager};
 use crate::bluetooth::avrcp::{AvrcpCommand, AvrcpMonitor};
@@ -59,6 +59,7 @@ async fn main() {
     let (webrtc_cmd_tx, webrtc_cmd_rx) = mpsc::channel::<WebRtcCommand>(32);
     let (cast_cmd_tx, cast_cmd_rx) = mpsc::channel::<ChromecastCommand>(32);
     let (airplay_cmd_tx, airplay_cmd_rx) = mpsc::channel::<AirPlayCommand>(32);
+    let (pipeline_cmd_tx, pipeline_cmd_rx) = mpsc::channel::<PipelineCommand>(16);
 
     // Initialize line-in manager
     let line_in = Arc::new(LineInManager::new(state.clone()));
@@ -79,6 +80,13 @@ async fn main() {
         error!("Failed to initialize audio pipeline: {}", e);
         info!("Continuing without audio pipeline (audio features will be unavailable)");
     }
+
+    // Spawn pipeline command loop (handles EQ updates from the web API).
+    // The pipeline is moved into this task; shutdown happens when the channel
+    // closes (i.e. when the server shuts down).
+    tokio::spawn(async move {
+        pipeline.run(pipeline_cmd_rx).await;
+    });
 
     // Start spectrum analyzer
     let spectrum = SpectrumAnalyzer::new(state.clone());
@@ -160,6 +168,7 @@ async fn main() {
         webrtc_cmd_tx: Some(webrtc_cmd_tx),
         cast_cmd_tx: Some(cast_cmd_tx),
         airplay_cmd_tx: Some(airplay_cmd_tx),
+        pipeline_cmd_tx: Some(pipeline_cmd_tx),
         audio_sender: Some(stream_audio_sender),
     };
 
@@ -216,8 +225,8 @@ async fn main() {
         .await
         .unwrap();
 
-    // Cleanup
-    pipeline.shutdown().await;
+    // Pipeline shutdown happens automatically when the command channel is
+    // dropped (the pipeline task calls shutdown() in its run() method).
     info!("SoundSync stopped");
 }
 

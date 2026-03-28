@@ -1,7 +1,7 @@
 # CONTEXT.md — AI Agent Prompt Context for SoundSync
 
 > Feed this file at the start of every AI coding session.
-> Last updated: 2026-03-28 | Version: 2.5.0
+> Last updated: 2026-03-28 | Version: 2.7.0
 
 ---
 
@@ -10,7 +10,7 @@
 **SoundSync** is a Bluetooth A2DP audio receiver for Linux/Raspberry Pi that streams to Chromecast, AirPlay devices, and browsers via WebRTC, with a 10-band parametric equalizer and responsive web UI.
 
 - **Repo:** https://github.com/tunlezah/sc
-- **Version:** 2.5.0
+- **Version:** 2.7.0
 - **License:** MIT
 - **Backend:** Rust (Axum, Tokio, bluer, PipeWire)
 - **Frontend:** TypeScript/Preact + Vite
@@ -95,7 +95,7 @@ scripts/soundsync.service      # systemd unit
 
 ## 5. Current Status
 
-- **Stable at v2.5.0** — Bluetooth A2DP, Chromecast, AirPlay, WebRTC, EQ all functional
+- **Stable at v2.7.0** — Bluetooth A2DP, Chromecast, AirPlay, WebRTC, EQ pipeline all functional
 - **88+ commits, 40 PRs merged**
 - **CI passing** — GitHub Actions (Rust fmt/clippy/test + frontend lint)
 - **Recent work:** Audio pipeline stabilization, WirePlumber integration, installer hardening
@@ -151,14 +151,13 @@ cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warni
 
 **Pattern:** Version updated in one file but not all three locations. Once, `version.ts` was stuck at v2.3.0 while everything else was v2.5.0.
 
-**All three files that must be updated together:**
+**All four files that must be updated together:**
 | File | Location |
 |------|----------|
 | `Cargo.toml` | `version = "X.Y.Z"` (line ~3) |
 | `webui/package.json` | `"version": "X.Y.Z"` (line ~4) |
+| `webui/src/version.ts` | `export const VERSION = 'vX.Y.Z';` (line 1) |
 | `install.sh` | `VERSION="X.Y.Z"` (line ~15) |
-
-Also update `webui/src/version.ts` if it exists with a hardcoded version.
 
 **WARNING:** Never use `$(cargo pkgid)` or shell commands to derive versions.
 
@@ -168,13 +167,30 @@ Also update `webui/src/version.ts` if it exists with a hardcoded version.
 
 **Rule:** `src/bluetooth/endpoint.rs` is REFERENCE ONLY. Never enable custom A2DP endpoint registration. WirePlumber must own all Bluetooth transports.
 
-### 6.6 Service User Mismatch
+### 6.6 EQ Filter-Chain Routing (Fixed in v2.7.0)
+
+**Pattern:** The EQ filter-chain creates its own Audio/Sink (`effect_input.soundsync-eq`) that outputs to `soundsync-capture`. But if `soundsync-capture` is the default sink, audio goes directly there, bypassing EQ.
+
+**Root causes (all fixed):**
+1. Default sink was `soundsync-capture` instead of `effect_input.soundsync-eq`
+2. Capture tried `bluez_input.*` first, bypassing null sink and EQ
+3. `update_eq()` was dead code — EQ changes from web UI never reached the pipeline
+4. Filter-chain config was missing `inputs`/`outputs` fields
+
+**Correct signal path:**
+```
+BT → effect_input.soundsync-eq (default sink) → EQ → soundsync-capture → capture
+```
+
+**Rule:** When EQ is enabled, the default sink MUST be the EQ input, not the null sink.
+
+### 6.7 Service User Mismatch
 
 **Pattern:** systemd service running as a different user than the PipeWire session owner. PipeWire is per-user — a `soundsync` system user cannot access another user's PipeWire.
 
 **Rule:** Service must run as `$SUDO_USER` (the human who ran the installer).
 
-### 6.7 Installer Script Regressions
+### 6.8 Installer Script Regressions
 
 **Pattern:** Multiple fixes for: not stopping service before copy, wrong webui paths, deploying unbuilt source instead of dist/, build order issues.
 
@@ -189,8 +205,8 @@ Also update `webui/src/version.ts` if it exists with a hardcoded version.
 3. **Service runs as the PipeWire session user** — not root, not a system user
 4. **All 3 version locations in sync** — Cargo.toml, package.json, install.sh
 5. **Pre-commit checks pass** — fmt, clippy, test, build — before every push
-6. **Null sink set as default** — otherwise Bluetooth audio won't route to capture
-7. **Capture uses 3-tier source resolution** — BT direct → null sink monitor → default
+6. **EQ input sink set as default when EQ enabled** — `effect_input.soundsync-eq` must be the default sink so BT audio flows through EQ before reaching `soundsync-capture`. When EQ is disabled, `soundsync-capture` is the default.
+7. **Capture always uses null sink monitor** — never capture directly from `bluez_input.*` as that bypasses EQ. Direct BT capture is only a fallback when the null sink doesn't exist.
 8. **webui/dist/ deployed** — never the source index.html
 
 ---

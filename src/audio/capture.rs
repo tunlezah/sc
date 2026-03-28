@@ -147,18 +147,27 @@ enum CaptureSource {
     Default,
 }
 
-/// Resolve the best audio capture source using a 3-tier priority.
+/// Resolve the audio capture source.
+///
+/// Always captures from the null sink monitor so that audio passes through the
+/// EQ filter-chain before reaching consumers (WebRTC, spectrum, HTTP streams).
+/// Direct Bluetooth capture is only used as a last resort when the null sink
+/// doesn't exist (e.g. pactl/pw-loopback both failed).
 async fn resolve_capture_source(null_sink_name: &str) -> CaptureSource {
-    // Try to find an active Bluetooth audio source
-    if let Some(bt_source) = find_bluetooth_source().await {
-        info!("Found Bluetooth audio source: {}", bt_source);
-        return CaptureSource::BluetoothDirect(bt_source);
+    // Primary: capture from null sink monitor (receives EQ-processed audio)
+    if node_exists(null_sink_name).await {
+        debug!("Using null sink monitor: {}", null_sink_name);
+        return CaptureSource::NullSink(null_sink_name.to_string());
     }
 
-    // Check if the null sink exists (it may not if pactl/pw-loopback failed)
-    if node_exists(null_sink_name).await {
-        debug!("Using null sink: {}", null_sink_name);
-        return CaptureSource::NullSink(null_sink_name.to_string());
+    // Fallback: direct Bluetooth source (no EQ processing)
+    if let Some(bt_source) = find_bluetooth_source().await {
+        warn!(
+            "Null sink not available — falling back to direct Bluetooth capture: {} \
+             (EQ will not be applied)",
+            bt_source
+        );
+        return CaptureSource::BluetoothDirect(bt_source);
     }
 
     info!("No specific source found — using default");

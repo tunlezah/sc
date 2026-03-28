@@ -107,11 +107,10 @@ The install script uses `$SUDO_USER` (the user who ran `sudo bash install.sh`).
 The audio pipeline depends on PipeWire and its ecosystem:
 
 - **Null Sink**: Created via `pactl load-module module-null-sink` or `pw-loopback` fallback
-- **Default Sink**: Must be set to `soundsync-capture` so Bluetooth audio routes there
-- **Capture**: Uses `parec` (preferred) or `pw-cat` (fallback), with 3-tier source resolution:
-  1. Direct Bluetooth source (`bluez_input.*`) — highest priority
-  2. Null sink monitor (`soundsync-capture`)
-  3. Default source — fallback
+- **EQ Filter-Chain**: `pipewire-filter-chain` subprocess creates `effect_input.soundsync-eq` (Audio/Sink) that outputs to `soundsync-capture`
+- **Default Sink**: When EQ is enabled, default sink must be `effect_input.soundsync-eq` so audio flows through EQ. When disabled, default is `soundsync-capture`.
+- **Capture**: Uses `parec` (preferred) or `pw-cat` (fallback), always from `soundsync-capture.monitor` to receive EQ-processed audio. Direct BT capture is only a fallback if null sink doesn't exist.
+- **EQ Update Pipeline**: Web API sends `PipelineCommand::UpdateEq` via mpsc channel to the pipeline task, which restarts `pipewire-filter-chain` with new settings.
 
 ### Bluetooth A2DP
 
@@ -169,3 +168,5 @@ echo -e "\n=== BT SPA Plugin ===" && find /usr/lib -name "spa-0.2" -type d 2>/de
 7. **OS version in build**: Never use `$(uname -r)` or env vars for app version
 8. **Version not updated**: Check ALL locations listed above
 9. **"Unknown transport" in WirePlumber logs**: Custom A2DP MediaEndpoint1 objects are registered with BlueZ, stealing transports from WirePlumber. Do NOT register custom A2DP endpoints — WirePlumber must own the transports to create audio nodes. See `src/main.rs` comment.
+10. **EQ has no effect on audio**: Default sink must be `effect_input.soundsync-eq` when EQ is enabled. If it's `soundsync-capture`, audio bypasses EQ entirely.
+11. **EQ changes don't apply until restart**: EQ updates from the web API must reach the pipeline via `PipelineCommand::UpdateEq`. If `pipeline_cmd_tx` is not wired into the `AppRouter`, changes only update the UI state.

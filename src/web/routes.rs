@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::Json;
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::audio::airplay::{AirPlayCommand, AirPlayDeviceInfo};
 use crate::audio::chromecast::{CastDeviceInfo, ChromecastCommand};
 use crate::audio::line_in::LineInManager;
+use crate::audio::pipeline::PipelineCommand;
 use crate::audio::webrtc_audio::WebRtcCommand;
 use crate::bluetooth::avrcp::AvrcpCommand;
 use crate::bluetooth::manager::BluetoothCommand;
@@ -26,6 +27,7 @@ pub struct AppRouter {
     pub webrtc_cmd_tx: Option<mpsc::Sender<WebRtcCommand>>,
     pub cast_cmd_tx: Option<mpsc::Sender<ChromecastCommand>>,
     pub airplay_cmd_tx: Option<mpsc::Sender<AirPlayCommand>>,
+    pub pipeline_cmd_tx: Option<mpsc::Sender<PipelineCommand>>,
     pub audio_sender: Option<broadcast::Sender<Vec<f32>>>,
 }
 
@@ -132,6 +134,8 @@ pub fn create_router(app: AppRouter) -> Router {
         .route("/api/airplay/connect", post(post_airplay_connect))
         .route("/api/airplay/disconnect", post(post_airplay_disconnect))
         .route("/api/airplay/volume", post(post_airplay_volume))
+        // Album artwork
+        .route("/api/artwork", get(get_artwork))
         // HTTP Audio Streams (AAC-LC primary, MP3 legacy fallback)
         .route("/api/stream/audio.aac", get(get_audio_stream_aac))
         .route("/api/stream/audio.mp3", get(get_audio_stream_mp3))
@@ -255,6 +259,16 @@ async fn post_eq(State(app): State<AppRouter>, Json(body): Json<EqRequest>) -> J
     let enabled = state.eq_enabled;
     drop(state);
 
+    // Send EQ update to pipeline so filter-chain is restarted with new settings
+    if let Some(ref tx) = app.pipeline_cmd_tx {
+        let _ = tx
+            .send(PipelineCommand::UpdateEq {
+                bands: bands.clone(),
+                enabled,
+            })
+            .await;
+    }
+
     app.state
         .publish(crate::state::SystemEvent::EqChanged { bands, enabled });
 
@@ -276,6 +290,16 @@ async fn post_apply_preset(
     state.eq_bands = bands.clone();
     let enabled = state.eq_enabled;
     drop(state);
+
+    // Send EQ update to pipeline so filter-chain is restarted with new preset
+    if let Some(ref tx) = app.pipeline_cmd_tx {
+        let _ = tx
+            .send(PipelineCommand::UpdateEq {
+                bands: bands.clone(),
+                enabled,
+            })
+            .await;
+    }
 
     app.state
         .publish(crate::state::SystemEvent::EqChanged { bands, enabled });
@@ -438,6 +462,29 @@ async fn post_airplay_volume(
             .await;
     }
     ok_response()
+}
+
+// -- Artwork endpoint --
+
+/// Serve album artwork extracted from AVRCP, if available.
+/// Returns 404 if no artwork is currently stored.
+async fn get_artwork(
+    State(app): State<AppRouter>,
+) -> Result<axum::response::Response, StatusCode> {
+    let state = app.state.state.read().await;
+    let data = state.artwork_data.clone();
+    let mime = state.artwork_mime.clone();
+    drop(state);
+
+    match (data, mime) {
+        (Some(data), Some(mime)) => Ok(axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::CACHE_CONTROL, "no-cache")
+            .body(axum::body::Body::from(data))
+            .unwrap()),
+        _ => Err(StatusCode::NOT_FOUND),
+    }
 }
 
 // -- HTTP Audio Stream endpoints --
