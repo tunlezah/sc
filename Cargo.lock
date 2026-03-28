@@ -2808,7 +2808,7 @@ dependencies = [
 
 [[package]]
 name = "soundsync"
-version = "2.5.0"
+version = "2.6.0"
 dependencies = [
  "axum",
  "bluer",
@@ -2823,6 +2823,7 @@ dependencies = [
  "rtp",
  "rust_cast",
  "rustfft",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

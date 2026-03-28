@@ -11,6 +11,7 @@ When bumping version numbers, ALL of these must be updated together:
 |------|----------|--------|-------|
 | `Cargo.toml` | Line ~3: `version = "X.Y.Z"` | `"X.Y.Z"` | Backend version. `env!("CARGO_PKG_VERSION")` reads this at compile time — do NOT use environment variables. |
 | `webui/package.json` | Line ~4: `"version": "X.Y.Z"` | `"X.Y.Z"` | Frontend npm version. |
+| `webui/src/version.ts` | Line 1: `export const VERSION = 'vX.Y.Z';` | `'vX.Y.Z'` | **Displayed in the web UI header.** Note the `v` prefix. |
 | `install.sh` | Line ~15: `VERSION="X.Y.Z"` | `"X.Y.Z"` | Shown during install, written to version file. |
 
 **WARNING**: Do NOT use `$(cargo pkgid)`, shell commands, or environment variables to
