@@ -287,7 +287,7 @@ async fn find_bt_source_pwdump() -> Option<String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Search for bluez node names in the JSON dump
     for line in stdout.lines() {
-        let trimmed = line.trim().trim_matches('"').trim_matches(',');
+        let trimmed = line.trim().trim_end_matches(',').trim_matches('"');
         if is_bt_source_name(trimmed) {
             return Some(trimmed.to_string());
         }
@@ -355,11 +355,16 @@ fn find_bt_name_in_listing(text: &str) -> Option<String> {
     None
 }
 
-/// Extract a string value from a JSON-like line: `"key": "value"` → `value`
+/// Extract a string value from a JSON-like line: `"key": "value",` → `value`
 fn extract_json_string_value(line: &str) -> Option<String> {
     let parts: Vec<&str> = line.splitn(2, ':').collect();
     if parts.len() == 2 {
-        let val = parts[1].trim().trim_matches('"').trim_matches(',').trim();
+        // Strip whitespace, then commas, then quotes (order matters for `"value",` patterns)
+        let val = parts[1]
+            .trim()
+            .trim_end_matches(',')
+            .trim_matches('"')
+            .trim();
         if !val.is_empty() {
             return Some(val.to_string());
         }
