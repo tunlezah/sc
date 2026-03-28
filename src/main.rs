@@ -81,6 +81,10 @@ async fn main() {
         info!("Continuing without audio pipeline (audio features will be unavailable)");
     }
 
+    // Get audio senders BEFORE moving pipeline into the command loop task.
+    let audio_sender = pipeline.audio_sender();
+    let stream_audio_sender = pipeline.audio_sender();
+
     // Spawn pipeline command loop (handles EQ updates from the web API).
     // The pipeline is moved into this task; shutdown happens when the channel
     // closes (i.e. when the server shuts down).
@@ -95,7 +99,6 @@ async fn main() {
     });
 
     // Start WebRTC manager with audio capture subscription
-    let audio_sender = pipeline.audio_sender();
     let webrtc_state = state.clone();
     tokio::spawn(async move {
         match WebRtcManager::new(audio_sender, webrtc_state) {
@@ -155,9 +158,6 @@ async fn main() {
     tokio::spawn(async move {
         avrcp_monitor.run().await;
     });
-
-    // Get audio sender for HTTP streaming endpoint
-    let stream_audio_sender = pipeline.audio_sender();
 
     // Create web router
     let app_router = AppRouter {
