@@ -457,13 +457,20 @@ EOF
 # 6. XDG_RUNTIME_DIR setup
 # -------------------------------------------------------------------
 setup_xdg() {
-    log "Setting up XDG_RUNTIME_DIR..."
+    log "Setting up XDG_RUNTIME_DIR and PipeWire user services..."
     local RUN_USER="${SUDO_USER:-$(whoami)}"
     loginctl enable-linger "${RUN_USER}" 2>/dev/null || warn "Could not enable-linger for ${RUN_USER}"
     local uid
     uid=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
     mkdir -p "/run/user/${uid}"
     chown "${RUN_USER}:${RUN_USER}" "/run/user/${uid}" 2>/dev/null || true
+
+    # Ensure PipeWire and WirePlumber are enabled as user services
+    # (they must be running for SoundSync to create sinks, capture audio, etc.)
+    su - "${RUN_USER}" -s /bin/bash -c "
+        systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
+        systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
+    " || warn "Could not enable PipeWire user services — they may already be enabled"
 }
 
 # -------------------------------------------------------------------
