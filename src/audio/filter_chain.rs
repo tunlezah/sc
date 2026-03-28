@@ -46,18 +46,48 @@ impl FilterChainManager {
             self.config_path.display()
         );
 
-        // Spawn the filter-chain process
-        let child = Command::new("pipewire-filter-chain")
-            .arg("--config")
-            .arg(&self.config_path)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn filter-chain: {}", e))?;
+        // Spawn the filter-chain process.
+        // Some distributions provide `pipewire-filter-chain` as a separate binary,
+        // others require `pipewire -c <config>` (Debian/Ubuntu/Raspberry Pi OS).
+        let child = Self::spawn_filter_chain(&self.config_path)?;
 
-        info!("Filter-chain process started (PID: {:?})", child.id());
+        info!(
+            "Filter-chain process started (PID: {:?}), config: {}",
+            child.id(),
+            self.config_path.display()
+        );
         self.child = Some(child);
 
         Ok(())
+    }
+
+    /// Spawn the filter-chain process using the best available method.
+    ///
+    /// Tries in order:
+    /// 1. `pipewire-filter-chain --config <path>` — standalone binary (some distros)
+    /// 2. `pipewire -c <path>` — embedded mode (Debian/Ubuntu/Raspberry Pi OS)
+    fn spawn_filter_chain(config_path: &std::path::Path) -> Result<Child, String> {
+        // Method 1: try pipewire-filter-chain
+        if which_exists("pipewire-filter-chain") {
+            return Command::new("pipewire-filter-chain")
+                .arg("--config")
+                .arg(config_path)
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| format!("Failed to spawn pipewire-filter-chain: {}", e));
+        }
+
+        // Method 2: try pipewire -c (Debian/Ubuntu style)
+        if which_exists("pipewire") {
+            return Command::new("pipewire")
+                .arg("-c")
+                .arg(config_path)
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| format!("Failed to spawn pipewire -c: {}", e));
+        }
+
+        Err("Neither pipewire-filter-chain nor pipewire found in PATH".to_string())
     }
 
     /// Stop the filter-chain process.
@@ -97,4 +127,12 @@ impl Drop for FilterChainManager {
         // Clean up config file
         let _ = std::fs::remove_file(&self.config_path);
     }
+}
+
+fn which_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
