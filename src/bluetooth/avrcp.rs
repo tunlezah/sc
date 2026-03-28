@@ -74,7 +74,18 @@ impl AvrcpMonitor {
 
     async fn current_poll_interval(&self) -> Duration {
         let app = self.state.state.read().await;
-        if app.active_device.is_some() {
+        // Poll fast if any device is connected (not just AudioActive).
+        // The reference BluetoothA2DP project polls at 250ms for Connected,
+        // ProfileNegotiated, PipewireSourceReady, and AudioActive states.
+        let has_connected = app.active_device.is_some()
+            || app.devices.values().any(|d| {
+                matches!(
+                    d.state,
+                    crate::bluetooth::device::DeviceState::Connected
+                        | crate::bluetooth::device::DeviceState::AudioActive
+                )
+            });
+        if has_connected {
             AVRCP_POLL_ACTIVE
         } else {
             AVRCP_POLL_IDLE
@@ -122,13 +133,27 @@ impl AvrcpMonitor {
 
     async fn get_player_path(&self) -> Option<String> {
         let app = self.state.state.read().await;
-        app.active_device.as_ref().map(|addr| {
-            format!(
-                "/org/bluez/{}/dev_{}/player0",
-                self.adapter_name,
-                addr.replace(':', "_")
-            )
-        })
+        // Try active_device first, then fall back to any connected device.
+        // Without custom A2DP endpoints, active_device may not be set until
+        // WirePlumber creates a bluez_input.* node, but AVRCP should still
+        // work for any connected device.
+        let addr = app.active_device.clone().or_else(|| {
+            app.devices
+                .iter()
+                .find(|(_, d)| {
+                    matches!(
+                        d.state,
+                        crate::bluetooth::device::DeviceState::Connected
+                            | crate::bluetooth::device::DeviceState::AudioActive
+                    )
+                })
+                .map(|(addr, _)| addr.clone())
+        })?;
+        Some(format!(
+            "/org/bluez/{}/dev_{}/player0",
+            self.adapter_name,
+            addr.replace(':', "_")
+        ))
     }
 
     async fn poll_media_player(&mut self, connection: &zbus::Connection) {
