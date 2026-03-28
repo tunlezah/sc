@@ -11,10 +11,7 @@ use crate::state::{AppStateHandle, SystemEvent};
 #[derive(Debug)]
 pub enum PipelineCommand {
     /// Update EQ bands and enabled state.
-    UpdateEq {
-        bands: Vec<EqBand>,
-        enabled: bool,
-    },
+    UpdateEq { bands: Vec<EqBand>, enabled: bool },
 }
 
 const NULL_SINK_NAME: &str = "soundsync-capture";
@@ -247,10 +244,7 @@ impl AudioPipeline {
                 .await;
             match result {
                 Ok(out) if out.status.success() => {
-                    info!(
-                        "Default sink set to {} (ID {}) via wpctl",
-                        sink_name, id
-                    );
+                    info!("Default sink set to {} (ID {}) via wpctl", sink_name, id);
                 }
                 _ => warn!("wpctl set-default failed for ID {}", id),
             }

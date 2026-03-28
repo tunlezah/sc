@@ -468,9 +468,7 @@ async fn post_airplay_volume(
 
 /// Serve album artwork extracted from AVRCP, if available.
 /// Returns 404 if no artwork is currently stored.
-async fn get_artwork(
-    State(app): State<AppRouter>,
-) -> Result<axum::response::Response, StatusCode> {
+async fn get_artwork(State(app): State<AppRouter>) -> Result<axum::response::Response, StatusCode> {
     let state = app.state.state.read().await;
     let data = state.artwork_data.clone();
     let mime = state.artwork_mime.clone();
