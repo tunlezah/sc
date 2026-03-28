@@ -416,5 +416,63 @@ impl BluetoothManager {
                 }
             }
         }
+
+        // Check if any connected device now has a PipeWire audio source
+        // (meaning WirePlumber acquired the transport)
+        if let Some(bt_source) = detect_bt_audio_source().await {
+            // Extract address from source name (e.g. "bluez_input.44_4A_DB_B4_E7_0D" -> "44:4A:DB:B4:E7:0D")
+            if let Some(addr) = extract_address_from_bt_source(&bt_source) {
+                let current_state = {
+                    let app = self.state.state.read().await;
+                    app.devices.get(&addr).map(|d| d.state.clone())
+                };
+                if let Some(state) = current_state {
+                    if state == DeviceState::Connected {
+                        discovery::update_device_state(
+                            &self.state,
+                            &addr,
+                            DeviceState::AudioActive,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Detect if a Bluetooth audio source exists in PipeWire/PulseAudio.
+async fn detect_bt_audio_source() -> Option<String> {
+    let output = tokio::process::Command::new("pactl")
+        .args(["list", "short", "sources"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        for word in line.split_whitespace() {
+            if word.starts_with("bluez_input.") || word.starts_with("bluez_source.") {
+                return Some(word.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract MAC address from a bluez source name.
+/// e.g. "bluez_input.44_4A_DB_B4_E7_0D" -> "44:4A:DB:B4:E7:0D"
+fn extract_address_from_bt_source(source: &str) -> Option<String> {
+    let name = source
+        .strip_prefix("bluez_input.")
+        .or_else(|| source.strip_prefix("bluez_source."))?;
+    // Take only the MAC part (first 17 chars of underscore-separated hex)
+    let mac_part: String = name.chars().take(17).collect();
+    if mac_part.len() == 17 {
+        Some(mac_part.replace('_', ":"))
+    } else {
+        None
     }
 }
