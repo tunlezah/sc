@@ -27,6 +27,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() {
+    // Install rustls CryptoProvider before any WebRTC/DTLS code runs.
+    // The webrtc crate uses rustls for DTLS, which requires a crypto backend.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls CryptoProvider");
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(

@@ -1,6 +1,6 @@
 [package]
 name = "soundsync"
-version = "2.5.0"
+version = "2.6.0"
 edition = "2021"
 description = "Bluetooth A2DP Sink with DSP EQ, WebRTC streaming, and Web UI"
 license = "MIT"
@@ -31,6 +31,7 @@ rustfft = "6.2"
 webrtc = "0.12"
 rtp = "0.12"
 bytes = "1"
+rustls = { version = "0.23", features = ["ring"] }
 
 # Web
 axum = { version = "0.7", features = ["ws", "macros"] }
