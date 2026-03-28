@@ -246,7 +246,7 @@ mod tests {
         // Should have 9 links (bands 0→1, 1→2, ... 8→9) plus inputs/outputs
         assert_eq!(config.matches("eq_band_0:Out").count(), 1); // in links only
         assert_eq!(config.matches("eq_band_9:In").count(), 1); // in links only
-        // inputs/outputs fields reference first and last bands
+                                                               // inputs/outputs fields reference first and last bands
         assert!(config.contains("inputs  = [ \"eq_band_0:In\" ]"));
         assert!(config.contains("outputs = [ \"eq_band_9:Out\" ]"));
     }
