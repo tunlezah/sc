@@ -53,9 +53,10 @@ struct CastSession {
 /// is sent via an mpsc channel, and the manager processes commands in a `run()` loop.
 ///
 /// Discovery uses mDNS to find `_googlecast._tcp.local.` services on the network.
-/// Streaming works by telling the Chromecast to load the HTTP MP3 stream URL
-/// served by `cast_stream::stream_audio_mp3`, which pulls audio from the existing
-/// PCM broadcast channel. This ensures all audio flows through the core pipeline.
+/// Streaming works by telling the Chromecast to load the HTTP AAC stream URL
+/// served by `cast_stream::stream_audio_aac` (256 kbps AAC-LC in ADTS), which
+/// pulls audio from the existing PCM broadcast channel. Falls back to MP3 if
+/// FFmpeg is unavailable. This ensures all audio flows through the core pipeline.
 pub struct ChromecastManager {
     state: AppStateHandle,
     server_port: u16,

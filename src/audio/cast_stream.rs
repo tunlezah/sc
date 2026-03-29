@@ -73,13 +73,15 @@ async fn stream_aac_inner(
         .header(header::CONTENT_TYPE, "audio/aac")
         .header(header::TRANSFER_ENCODING, "chunked")
         .header(header::CACHE_CONTROL, "no-cache, no-store")
+        .header(header::CONNECTION, "keep-alive")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .header("icy-name", "SoundSync")
         .header("icy-br", "256")
         .body(body)
         .unwrap())
 }
 
-/// Legacy MP3 stream endpoint (used as fallback when FFmpeg is unavailable).
+/// MP3 stream endpoint (used as fallback when FFmpeg is unavailable, 256 kbps).
 pub async fn stream_audio_mp3(
     audio_sender: broadcast::Sender<Vec<f32>>,
 ) -> Result<Response, StatusCode> {
@@ -121,8 +123,10 @@ pub async fn stream_audio_mp3(
         .header(header::CONTENT_TYPE, "audio/mpeg")
         .header(header::TRANSFER_ENCODING, "chunked")
         .header(header::CACHE_CONTROL, "no-cache, no-store")
+        .header(header::CONNECTION, "keep-alive")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .header("icy-name", "SoundSync")
-        .header("icy-br", "192")
+        .header("icy-br", "256")
         .body(body)
         .unwrap())
 }

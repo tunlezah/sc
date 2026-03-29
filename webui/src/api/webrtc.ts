@@ -15,20 +15,25 @@ export class WebRTCClient {
   }
 
   async start(): Promise<void> {
+    // Create audio element synchronously during user gesture (click handler)
+    // so that Mobile Safari allows playback. If created later in an async
+    // callback (ontrack), the gesture context has expired and play() is blocked.
+    this.audioElement = document.createElement('audio');
+    this.audioElement.autoplay = true;
+    this.audioElement.setAttribute('playsinline', '');
+    document.body.appendChild(this.audioElement);
+
     this.pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
 
     this.pc.ontrack = (event) => {
-      if (!this.audioElement) {
-        this.audioElement = document.createElement('audio');
-        this.audioElement.autoplay = true;
-        document.body.appendChild(this.audioElement);
+      if (this.audioElement) {
+        this.audioElement.srcObject = event.streams[0];
+        this.audioElement.play().catch(() => {
+          // autoplay may be blocked — user can tap the element
+        });
       }
-      this.audioElement.srcObject = event.streams[0];
-      this.audioElement.play().catch(() => {
-        // autoplay may be blocked
-      });
       this.onStateChange(true);
     };
 
