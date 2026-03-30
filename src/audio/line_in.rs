@@ -256,11 +256,9 @@ fn parse_loopback_module_ids(pactl_output: &str, sink_name: &str) -> Vec<u32> {
             is_loopback = false;
         } else if trimmed.starts_with("Name:") {
             is_loopback = trimmed.contains("module-loopback");
-        } else if trimmed.starts_with("Argument:") && is_loopback {
-            if trimmed.contains(sink_name) {
-                if let Some(id) = current_id {
-                    ids.push(id);
-                }
+        } else if trimmed.starts_with("Argument:") && is_loopback && trimmed.contains(sink_name) {
+            if let Some(id) = current_id {
+                ids.push(id);
             }
         }
     }
