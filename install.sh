@@ -434,6 +434,10 @@ Type=simple
 User=${RUN_USER}
 Group=audio
 WorkingDirectory=${INSTALL_DIR}
+# Clean up orphaned SoundSync PulseAudio modules before starting.
+# This prevents duplicate null sinks and loopback modules from accumulating
+# across restarts. Safe to run when no modules exist (pactl returns 0).
+ExecStartPre=/bin/bash -c 'pactl list short modules 2>/dev/null | grep -E "module-(null-sink|loopback)" | while read -r id name args; do case "\$args" in *soundsync*) pactl unload-module "\$id" 2>/dev/null && echo "Pre-start: unloaded module \$id (\$name)" || true ;; esac; done; true'
 ExecStart=${INSTALL_DIR}/soundsync
 Environment=XDG_RUNTIME_DIR=/run/user/${RUN_UID}
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus

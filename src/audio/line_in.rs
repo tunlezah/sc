@@ -43,7 +43,11 @@ impl LineInManager {
     }
 
     /// Update state with detected line-in source.
+    /// Also cleans up any orphaned loopback modules from previous runs.
     pub async fn initialize(&self) {
+        // Clean up orphaned loopback modules targeting our sink from previous runs
+        cleanup_orphaned_loopbacks().await;
+
         if let Some(source) = self.detect_sources().await {
             info!("Line-in source detected: {}", source);
             let mut app = self.state.state.write().await;
@@ -66,6 +70,9 @@ impl LineInManager {
             .ok_or_else(|| "No line-in source available".to_string())?;
 
         info!("Activating line-in source: {}", source);
+
+        // Deactivate first to clean up any existing loopback module
+        self.deactivate_inner().await;
 
         // Load loopback module: routes line-in source → soundsync-capture sink
         let output = Command::new("pactl")
@@ -118,7 +125,18 @@ impl LineInManager {
     pub async fn deactivate(&self) -> Result<(), String> {
         info!("Deactivating line-in");
 
-        // Unload the loopback module if one is active
+        self.deactivate_inner().await;
+
+        let mut app = self.state.state.write().await;
+        app.line_in_active = false;
+        drop(app);
+
+        self.state.publish(SystemEvent::LineInDeactivated);
+        Ok(())
+    }
+
+    /// Unload the tracked loopback module if one is active.
+    async fn deactivate_inner(&self) {
         let module_id = {
             let mut lock = self.loopback_module_id.lock().await;
             lock.take()
@@ -143,13 +161,6 @@ impl LineInManager {
                 }
             }
         }
-
-        let mut app = self.state.state.write().await;
-        app.line_in_active = false;
-        drop(app);
-
-        self.state.publish(SystemEvent::LineInDeactivated);
-        Ok(())
     }
 
     /// Get current line-in status.
@@ -168,6 +179,93 @@ pub struct LineInStatus {
     pub available: bool,
     pub active: bool,
     pub source_name: Option<String>,
+}
+
+/// Clean up orphaned module-loopback instances that target soundsync-capture.
+///
+/// Queries `pactl list modules` and unloads any module-loopback whose arguments
+/// contain our sink name. This prevents accumulation across restarts.
+async fn cleanup_orphaned_loopbacks() {
+    let output = match Command::new("pactl")
+        .args(["list", "modules"])
+        .output()
+        .await
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let module_ids = parse_loopback_module_ids(&stdout, NULL_SINK_NAME);
+
+    for id in &module_ids {
+        info!(
+            "Cleaning up orphaned loopback module {} (targets {})",
+            id, NULL_SINK_NAME
+        );
+        let result = Command::new("pactl")
+            .args(["unload-module", &id.to_string()])
+            .output()
+            .await;
+        match result {
+            Ok(out) if out.status.success() => {
+                info!("Unloaded orphaned loopback module {}", id);
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                warn!(
+                    "Failed to unload orphaned loopback module {}: {}",
+                    id, stderr
+                );
+            }
+            Err(e) => {
+                warn!("Failed to run pactl to unload module {}: {}", id, e);
+            }
+        }
+    }
+
+    if !module_ids.is_empty() {
+        info!(
+            "Cleaned up {} orphaned loopback module(s)",
+            module_ids.len()
+        );
+    }
+}
+
+/// Parse `pactl list modules` output and return module IDs for module-loopback
+/// instances whose arguments reference the given sink name.
+///
+/// The output format has blocks like:
+/// ```text
+/// Module #42
+///     Name: module-loopback
+///     Argument: source=alsa_input... sink=soundsync-capture ...
+///     ...
+/// ```
+fn parse_loopback_module_ids(pactl_output: &str, sink_name: &str) -> Vec<u32> {
+    let mut ids = Vec::new();
+    let mut current_id: Option<u32> = None;
+    let mut is_loopback = false;
+
+    for line in pactl_output.lines() {
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("Module #") {
+            // Save previous module if it matched
+            current_id = rest.parse::<u32>().ok();
+            is_loopback = false;
+        } else if trimmed.starts_with("Name:") {
+            is_loopback = trimmed.contains("module-loopback");
+        } else if trimmed.starts_with("Argument:") && is_loopback {
+            if trimmed.contains(sink_name) {
+                if let Some(id) = current_id {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+
+    ids
 }
 
 /// Parse pactl output to find an alsa_input source (line-in).
@@ -213,5 +311,47 @@ mod tests {
         let source = parse_line_in_source(output);
         assert!(source.is_some());
         assert!(source.unwrap().contains("usb"));
+    }
+
+    #[test]
+    fn test_parse_loopback_module_ids_finds_matching() {
+        let output = "\
+Module #10
+\tName: module-null-sink
+\tArgument: sink_name=soundsync-capture
+Module #42
+\tName: module-loopback
+\tArgument: source=alsa_input.pci sink=soundsync-capture latency_msec=20
+Module #43
+\tName: module-loopback
+\tArgument: source=alsa_input.usb sink=some-other-sink latency_msec=20
+Module #44
+\tName: module-loopback
+\tArgument: source=alsa_input.hdmi sink=soundsync-capture latency_msec=20
+";
+        let ids = parse_loopback_module_ids(output, "soundsync-capture");
+        assert_eq!(ids, vec![42, 44]);
+    }
+
+    #[test]
+    fn test_parse_loopback_module_ids_empty() {
+        let output = "\
+Module #10
+\tName: module-null-sink
+\tArgument: sink_name=soundsync-capture
+";
+        let ids = parse_loopback_module_ids(output, "soundsync-capture");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_parse_loopback_module_ids_no_match() {
+        let output = "\
+Module #42
+\tName: module-loopback
+\tArgument: source=alsa_input.pci sink=other-sink latency_msec=20
+";
+        let ids = parse_loopback_module_ids(output, "soundsync-capture");
+        assert!(ids.is_empty());
     }
 }
