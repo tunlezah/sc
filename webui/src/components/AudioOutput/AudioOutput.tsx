@@ -2,13 +2,15 @@ import { useState } from 'preact/hooks';
 import type { CastDevice, AirPlayDevice } from '../../types';
 import * as api from '../../api/rest';
 
-type OutputTab = 'chromecast' | 'airplay';
+type OutputTab = 'chromecast' | 'airplay' | 'line_in';
 
 interface AudioOutputProps {
   castDevices: CastDevice[];
   castActive: string | null;
   airplayDevices: AirPlayDevice[];
   airplayActive: string | null;
+  lineInActive?: boolean;
+  lineInAvailable?: boolean;
 }
 
 export function AudioOutput({
@@ -16,6 +18,8 @@ export function AudioOutput({
   castActive,
   airplayDevices,
   airplayActive,
+  lineInActive = false,
+  lineInAvailable = false,
 }: AudioOutputProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<OutputTab>('chromecast');
@@ -86,6 +90,12 @@ export function AudioOutput({
             onClick={() => setActiveTab('airplay')}
           >
             AirPlay ({airplayDevices.length})
+          </button>
+          <button
+            class={`output-tab ${activeTab === 'line_in' ? 'active' : ''}`}
+            onClick={() => setActiveTab('line_in')}
+          >
+            Line-In
           </button>
         </div>
 
@@ -213,6 +223,26 @@ export function AudioOutput({
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'line_in' && (
+          <div class="output-panel">
+            {lineInAvailable ? (
+              <div class="output-line-in-status">
+                <span class="output-line-in-label">
+                  Line-In Source {lineInActive ? <span class="badge badge-audio">Active</span> : <span class="badge badge-disconnected">Inactive</span>}
+                </span>
+                <button
+                  class={`btn btn-sm ${lineInActive ? 'btn-danger' : 'btn-primary'}`}
+                  onClick={() => lineInActive ? api.deactivateLineIn() : api.activateLineIn()}
+                >
+                  {lineInActive ? 'Deactivate' : 'Activate'}
+                </button>
+              </div>
+            ) : (
+              <div class="empty-state">No line-in source detected.</div>
             )}
           </div>
         )}
