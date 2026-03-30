@@ -378,10 +378,8 @@ fn parse_null_sink_module_id(pactl_output: &str, sink_name: &str) -> Option<u32>
             is_null_sink = false;
         } else if trimmed.starts_with("Name:") {
             is_null_sink = trimmed.contains("module-null-sink");
-        } else if trimmed.starts_with("Argument:") && is_null_sink {
-            if trimmed.contains(sink_name) {
-                return current_id;
-            }
+        } else if trimmed.starts_with("Argument:") && is_null_sink && trimmed.contains(sink_name) {
+            return current_id;
         }
     }
 
