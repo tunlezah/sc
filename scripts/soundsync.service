@@ -1,12 +1,16 @@
 [Unit]
 Description=SoundSync Bluetooth Audio Receiver
 After=bluetooth.service pipewire.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
 
 [Service]
 Type=simple
 User=soundsync
 Group=audio
 WorkingDirectory=/opt/soundsync
+# Clean up orphaned SoundSync PulseAudio modules before starting.
+# Prevents duplicate null sinks and loopback modules across restarts.
+ExecStartPre=/bin/bash -c 'pactl list short modules 2>/dev/null | grep -E "module-(null-sink|loopback)" | while read -r id name args; do case "$args" in *soundsync*) pactl unload-module "$id" 2>/dev/null || true ;; esac; done; true'
 ExecStart=/opt/soundsync/soundsync
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=RUST_LOG=info

@@ -110,8 +110,19 @@ impl AudioPipeline {
     }
 
     /// Create null sink via pactl (PulseAudio compatibility layer).
+    /// Checks if the sink already exists first to prevent duplicates.
     /// Retries up to 5 times with 1s delays since pipewire-pulse may not be ready.
     async fn create_null_sink_pactl(&mut self) -> Result<(), String> {
+        // Check if the null sink already exists (from a previous run)
+        if let Some(existing_id) = find_null_sink_module_id(NULL_SINK_NAME).await {
+            info!(
+                "Null sink {} already exists (module ID {}), reusing",
+                NULL_SINK_NAME, existing_id
+            );
+            self.null_sink_module_id = Some(existing_id);
+            return Ok(());
+        }
+
         const MAX_ATTEMPTS: u32 = 5;
         let mut last_err = String::new();
 
@@ -335,6 +346,48 @@ impl AudioPipeline {
     }
 }
 
+/// Find the module ID of an existing module-null-sink with the given sink name.
+///
+/// Parses `pactl list modules` output looking for a module-null-sink whose
+/// arguments contain the sink name. Returns the module ID if found.
+async fn find_null_sink_module_id(sink_name: &str) -> Option<u32> {
+    let output = Command::new("pactl")
+        .args(["list", "modules"])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_null_sink_module_id(&stdout, sink_name)
+}
+
+/// Parse `pactl list modules` output to find a module-null-sink by sink name.
+fn parse_null_sink_module_id(pactl_output: &str, sink_name: &str) -> Option<u32> {
+    let mut current_id: Option<u32> = None;
+    let mut is_null_sink = false;
+
+    for line in pactl_output.lines() {
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("Module #") {
+            current_id = rest.parse::<u32>().ok();
+            is_null_sink = false;
+        } else if trimmed.starts_with("Name:") {
+            is_null_sink = trimmed.contains("module-null-sink");
+        } else if trimmed.starts_with("Argument:") && is_null_sink {
+            if trimmed.contains(sink_name) {
+                return current_id;
+            }
+        }
+    }
+
+    None
+}
+
 /// Parse wpctl status output to find a node ID by name.
 /// wpctl status output has lines like: " │  42. soundsync-capture [vol: 1.00]"
 fn find_wpctl_node_id(status_output: &str, node_name: &str) -> Option<u32> {
@@ -390,5 +443,39 @@ Audio
     fn test_find_wpctl_node_id_not_found() {
         let output = " │      42. Built-in Audio [vol: 1.00]\n";
         assert_eq!(find_wpctl_node_id(output, "soundsync-capture"), None);
+    }
+
+    #[test]
+    fn test_parse_null_sink_module_id_found() {
+        let output = "\
+Module #10
+\tName: module-null-sink
+\tArgument: sink_name=soundsync-capture sink_properties=device.description=SoundSync-Capture
+Module #20
+\tName: module-loopback
+\tArgument: source=alsa_input sink=soundsync-capture
+";
+        assert_eq!(
+            parse_null_sink_module_id(output, "soundsync-capture"),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn test_parse_null_sink_module_id_not_found() {
+        let output = "\
+Module #10
+\tName: module-null-sink
+\tArgument: sink_name=other-sink
+Module #20
+\tName: module-loopback
+\tArgument: source=alsa_input sink=soundsync-capture
+";
+        assert_eq!(parse_null_sink_module_id(output, "soundsync-capture"), None);
+    }
+
+    #[test]
+    fn test_parse_null_sink_module_id_empty() {
+        assert_eq!(parse_null_sink_module_id("", "soundsync-capture"), None);
     }
 }
