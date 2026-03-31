@@ -163,7 +163,12 @@ impl AvrcpMonitor {
         };
 
         if let Err(e) = proxy.call_method(method, &()).await {
-            warn!("AVRCP: {} failed: {} (will trigger reconnect after {} more failures)", method, e, DBUS_RECONNECT_THRESHOLD.saturating_sub(self.consecutive_failures + 1));
+            warn!(
+                "AVRCP: {} failed: {} (will trigger reconnect after {} more failures)",
+                method,
+                e,
+                DBUS_RECONNECT_THRESHOLD.saturating_sub(self.consecutive_failures + 1)
+            );
             self.consecutive_failures += 1;
         } else {
             info!("AVRCP: {} executed", method);
@@ -275,7 +280,7 @@ impl AvrcpMonitor {
             Ok(p) => p,
             Err(e) => {
                 self.consecutive_failures += 1;
-                if self.consecutive_failures == 1 || self.consecutive_failures % 10 == 0 {
+                if self.consecutive_failures == 1 || self.consecutive_failures.is_multiple_of(10) {
                     warn!(
                         "AVRCP: poll proxy creation failed (attempt {}): {}",
                         self.consecutive_failures, e
@@ -344,7 +349,7 @@ impl AvrcpMonitor {
             self.consecutive_failures = 0;
         } else {
             self.consecutive_failures += 1;
-            if self.consecutive_failures == 1 || self.consecutive_failures % 10 == 0 {
+            if self.consecutive_failures == 1 || self.consecutive_failures.is_multiple_of(10) {
                 warn!(
                     "AVRCP: D-Bus poll failed ({} consecutive) — metadata may be stale",
                     self.consecutive_failures
