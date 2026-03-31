@@ -218,7 +218,10 @@ impl AudioPipeline {
                 let delay = Duration::from_secs((attempt as u64).min(5));
                 warn!(
                     "pactl load-module attempt {}/{} failed: {} — retrying in {}s",
-                    attempt, MAX_ATTEMPTS, last_err, delay.as_secs()
+                    attempt,
+                    MAX_ATTEMPTS,
+                    last_err,
+                    delay.as_secs()
                 );
                 tokio::time::sleep(delay).await;
             }
