@@ -8,6 +8,15 @@ interface MediaControlsProps {
   trackInfo: TrackInfo | null;
   playbackStatus: PlaybackStatus;
   ws: { current: WebRTCTransport | null };
+  activeDevice?: string | null;
+}
+
+function formatTime(ms: number): string {
+  if (!ms || ms <= 0) return '0:00';
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
 /** Try to start an HTTP audio stream as fallback when WebRTC is unavailable. */
@@ -26,12 +35,36 @@ function startHttpStream(): HTMLAudioElement {
   return audio;
 }
 
-export function MediaControls({ trackInfo, playbackStatus, ws }: MediaControlsProps) {
+export function MediaControls({ trackInfo, playbackStatus, ws, activeDevice }: MediaControlsProps) {
   const isPlaying = playbackStatus === 'playing';
   const [listening, setListening] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const rtcRef = useRef<WebRTCClient | null>(null);
   const httpAudioRef = useRef<HTMLAudioElement | null>(null);
   const unsubRef = useRef<(() => void) | null>(null);
+  const elapsedRef = useRef(0);
+  const trackStartRef = useRef<number>(Date.now());
+
+  // Track elapsed time when playing
+  useEffect(() => {
+    if (isPlaying && trackInfo?.duration_ms) {
+      trackStartRef.current = Date.now() - elapsedRef.current;
+      const interval = setInterval(() => {
+        const now = Date.now() - trackStartRef.current;
+        const clamped = Math.min(now, trackInfo.duration_ms);
+        elapsedRef.current = clamped;
+        setElapsed(clamped);
+      }, 500);
+      return () => clearInterval(interval);
+    }
+  }, [isPlaying, trackInfo?.duration_ms, trackInfo?.title]);
+
+  // Reset elapsed on track change
+  useEffect(() => {
+    elapsedRef.current = 0;
+    setElapsed(0);
+    trackStartRef.current = Date.now();
+  }, [trackInfo?.title, trackInfo?.artist]);
 
   const cleanup = useCallback(() => {
     rtcRef.current?.stop();
@@ -107,8 +140,12 @@ export function MediaControls({ trackInfo, playbackStatus, ws }: MediaControlsPr
     return () => cleanup();
   }, [cleanup]);
 
+  const progressPct = trackInfo?.duration_ms
+    ? Math.min((elapsed / trackInfo.duration_ms) * 100, 100)
+    : 0;
+
   return (
-    <div class="media-controls-row">
+    <div class="media-controls-row" style={{ flexWrap: 'wrap' }}>
       <div class="media-track-info">
         {trackInfo ? (
           <>
@@ -116,6 +153,7 @@ export function MediaControls({ trackInfo, playbackStatus, ws }: MediaControlsPr
             <div class="media-track-artist">
               {trackInfo.artist || 'Unknown Artist'}
               {trackInfo.album ? ` \u2014 ${trackInfo.album}` : ''}
+              {activeDevice ? <span style={{ marginLeft: '6px', opacity: 0.6, fontSize: '0.7rem' }}>via Bluetooth</span> : ''}
             </div>
           </>
         ) : (
@@ -148,6 +186,16 @@ export function MediaControls({ trackInfo, playbackStatus, ws }: MediaControlsPr
       >
         {listening ? '\u23F9 Stop' : '\u{1F50A} Listen'}
       </button>
+
+      {trackInfo?.duration_ms ? (
+        <div class="media-progress">
+          <span class="media-progress-time">{formatTime(elapsed)}</span>
+          <div class="media-progress-bar">
+            <div class="media-progress-fill" style={{ width: `${progressPct}%` }} />
+          </div>
+          <span class="media-progress-time">{formatTime(trackInfo.duration_ms)}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

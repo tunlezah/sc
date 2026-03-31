@@ -18,12 +18,17 @@ pub enum AvrcpCommand {
     Previous,
 }
 
+/// Number of consecutive D-Bus failures before triggering a reconnect.
+const DBUS_RECONNECT_THRESHOLD: u32 = 5;
+
 pub struct AvrcpMonitor {
     state: AppStateHandle,
     cmd_rx: mpsc::Receiver<AvrcpCommand>,
     adapter_name: String,
     last_track: Option<TrackInfo>,
     last_status: PlaybackStatus,
+    /// Consecutive poll failures (used to detect stale D-Bus connection).
+    consecutive_failures: u32,
 }
 
 impl AvrcpMonitor {
@@ -38,21 +43,53 @@ impl AvrcpMonitor {
             adapter_name,
             last_track: None,
             last_status: PlaybackStatus::Unknown,
+            consecutive_failures: 0,
+        }
+    }
+
+    /// Establish (or re-establish) a D-Bus system connection.
+    async fn connect_dbus() -> Option<zbus::Connection> {
+        match zbus::Connection::system().await {
+            Ok(conn) => {
+                info!("AVRCP: D-Bus connection established");
+                Some(conn)
+            }
+            Err(e) => {
+                error!("AVRCP: Failed to connect to D-Bus: {}", e);
+                None
+            }
         }
     }
 
     pub async fn run(mut self) {
         info!("AVRCP monitor starting...");
 
-        let connection = match zbus::Connection::system().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                error!("AVRCP: Failed to connect to D-Bus: {}", e);
-                return;
-            }
+        let mut connection = match Self::connect_dbus().await {
+            Some(conn) => conn,
+            None => return,
         };
 
         loop {
+            // Reconnect D-Bus if too many consecutive failures
+            if self.consecutive_failures >= DBUS_RECONNECT_THRESHOLD {
+                warn!(
+                    "AVRCP: {} consecutive D-Bus failures — reconnecting",
+                    self.consecutive_failures
+                );
+                self.consecutive_failures = 0;
+                match Self::connect_dbus().await {
+                    Some(conn) => {
+                        connection = conn;
+                        info!("AVRCP: D-Bus reconnected successfully");
+                    }
+                    None => {
+                        // Wait before retrying
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+            }
+
             let poll_interval = self.current_poll_interval().await;
 
             tokio::select! {
@@ -92,7 +129,7 @@ impl AvrcpMonitor {
         }
     }
 
-    async fn handle_command(&self, connection: &zbus::Connection, cmd: AvrcpCommand) {
+    async fn handle_command(&mut self, connection: &zbus::Connection, cmd: AvrcpCommand) {
         let player_path = match self.get_player_path().await {
             Some(p) => p,
             None => {
@@ -111,7 +148,8 @@ impl AvrcpMonitor {
         {
             Ok(p) => p,
             Err(e) => {
-                error!("AVRCP: Failed to create proxy: {}", e);
+                error!("AVRCP: Failed to create proxy for command: {}", e);
+                self.consecutive_failures += 1;
                 return;
             }
         };
@@ -125,9 +163,11 @@ impl AvrcpMonitor {
         };
 
         if let Err(e) = proxy.call_method(method, &()).await {
-            warn!("AVRCP: {} failed: {}", method, e);
+            warn!("AVRCP: {} failed: {} (will trigger reconnect after {} more failures)", method, e, DBUS_RECONNECT_THRESHOLD.saturating_sub(self.consecutive_failures + 1));
+            self.consecutive_failures += 1;
         } else {
             info!("AVRCP: {} executed", method);
+            self.consecutive_failures = 0;
         }
     }
 
@@ -233,11 +273,22 @@ impl AvrcpMonitor {
         .await
         {
             Ok(p) => p,
-            Err(_) => return,
+            Err(e) => {
+                self.consecutive_failures += 1;
+                if self.consecutive_failures == 1 || self.consecutive_failures % 10 == 0 {
+                    warn!(
+                        "AVRCP: poll proxy creation failed (attempt {}): {}",
+                        self.consecutive_failures, e
+                    );
+                }
+                return;
+            }
         };
 
-        // Poll status
+        // Poll status — track D-Bus health via success/failure
+        let mut poll_succeeded = false;
         if let Ok(status_val) = proxy.get_property::<String>("Status").await {
+            poll_succeeded = true;
             let status = PlaybackStatus::from_bluez(&status_val);
             if status != self.last_status {
                 self.last_status = status;
@@ -255,6 +306,7 @@ impl AvrcpMonitor {
             .get_property::<HashMap<String, OwnedValue>>("Track")
             .await
         {
+            poll_succeeded = true;
             let mut track = parse_track_info(&track_map);
             let changed = match (&self.last_track, &track) {
                 (None, None) => false,
@@ -278,6 +330,25 @@ impl AvrcpMonitor {
                     app.track_info.clone_from(&track);
                 }
                 self.state.publish(SystemEvent::TrackChanged { track });
+            }
+        }
+
+        // Reset failure counter on successful poll, increment otherwise
+        if poll_succeeded {
+            if self.consecutive_failures > 0 {
+                info!(
+                    "AVRCP: D-Bus poll recovered after {} failures",
+                    self.consecutive_failures
+                );
+            }
+            self.consecutive_failures = 0;
+        } else {
+            self.consecutive_failures += 1;
+            if self.consecutive_failures == 1 || self.consecutive_failures % 10 == 0 {
+                warn!(
+                    "AVRCP: D-Bus poll failed ({} consecutive) — metadata may be stale",
+                    self.consecutive_failures
+                );
             }
         }
     }

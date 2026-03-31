@@ -27,6 +27,7 @@ function stateBadge(state: DeviceState) {
 
 export function DeviceList({ devices, activeDevice: _activeDevice, status }: DeviceListProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [filter, setFilter] = useState('');
 
   const handleScan = () => {
     if (status === 'scanning') {
@@ -35,6 +36,13 @@ export function DeviceList({ devices, activeDevice: _activeDevice, status }: Dev
       api.startScan();
     }
   };
+
+  const filtered = filter
+    ? devices.filter((d) => {
+        const q = filter.toLowerCase();
+        return (d.name || '').toLowerCase().includes(q) || d.address.toLowerCase().includes(q);
+      })
+    : devices;
 
   return (
     <div class="card" style={{ flex: '1 1 50%', minHeight: 0 }}>
@@ -48,11 +56,27 @@ export function DeviceList({ devices, activeDevice: _activeDevice, status }: Dev
         </button>
       </div>
       <div class={`card-content ${collapsed ? 'collapsed' : ''}`}>
-        {devices.length === 0 ? (
-          <div class="empty-state">No devices found. Start scanning to discover Bluetooth devices.</div>
+        {devices.length > 0 && (
+          <div class="device-search">
+            <input
+              type="text"
+              class="device-search-input"
+              placeholder="Search devices..."
+              value={filter}
+              onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
+        {filtered.length === 0 ? (
+          <div class="empty-state">
+            {devices.length === 0
+              ? 'No devices found. Start scanning to discover Bluetooth devices.'
+              : 'No devices match your search.'}
+          </div>
         ) : (
           <div class="device-list">
-            {devices.map((device) => (
+            {filtered.map((device) => (
               <div class="device-item" key={device.address}>
                 <div class="device-info">
                   <div class="device-name">{device.name || device.address}</div>

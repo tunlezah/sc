@@ -1,3 +1,4 @@
+use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -57,6 +58,9 @@ impl AudioPipeline {
     ///   BT → soundsync-capture (default sink)
     ///        → soundsync-capture.monitor → capture
     pub async fn initialize(&mut self, bands: &[EqBand]) -> Result<(), String> {
+        // Wait for audio services to be ready (critical after reboot)
+        self.wait_for_audio_services().await;
+
         // Create null sink for monitoring/capture
         self.create_null_sink().await?;
 
@@ -92,6 +96,66 @@ impl AudioPipeline {
         Ok(())
     }
 
+    /// Wait for PipeWire/PulseAudio audio services to become operational.
+    /// After a system reboot, services may be started but not yet ready to
+    /// accept commands. This probes `pactl info` or `pw-cli info` in a loop.
+    async fn wait_for_audio_services(&self) {
+        const MAX_WAIT_SECS: u64 = 30;
+        const PROBE_INTERVAL: Duration = Duration::from_secs(1);
+
+        let start = std::time::Instant::now();
+        let mut attempt = 0u32;
+
+        loop {
+            attempt += 1;
+            let ready = if which_exists("pactl") {
+                Command::new("pactl")
+                    .args(["info"])
+                    .output()
+                    .await
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            } else if which_exists("pw-cli") {
+                Command::new("pw-cli")
+                    .args(["info", "0"])
+                    .output()
+                    .await
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            } else {
+                // No tool available to probe — proceed and hope for the best
+                warn!("No pactl or pw-cli found — cannot verify audio service readiness");
+                break;
+            };
+
+            if ready {
+                if attempt > 1 {
+                    info!(
+                        "Audio services ready after {}s ({} probes)",
+                        start.elapsed().as_secs(),
+                        attempt
+                    );
+                } else {
+                    info!("Audio services ready");
+                }
+                return;
+            }
+
+            if start.elapsed().as_secs() >= MAX_WAIT_SECS {
+                warn!(
+                    "Audio services not ready after {}s — proceeding anyway (pipeline may fail)",
+                    MAX_WAIT_SECS
+                );
+                return;
+            }
+
+            if attempt == 1 {
+                info!("Waiting for audio services to become ready...");
+            }
+            tokio::time::sleep(PROBE_INTERVAL).await;
+        }
+    }
+
     /// Create the null sink used for capturing audio.
     /// Tries pactl first (PulseAudio compat), falls back to PipeWire-native pw-loopback.
     async fn create_null_sink(&mut self) -> Result<(), String> {
@@ -111,7 +175,8 @@ impl AudioPipeline {
 
     /// Create null sink via pactl (PulseAudio compatibility layer).
     /// Checks if the sink already exists first to prevent duplicates.
-    /// Retries up to 5 times with 1s delays since pipewire-pulse may not be ready.
+    /// Retries up to 10 times with exponential backoff since pipewire-pulse
+    /// may not be ready immediately after boot.
     async fn create_null_sink_pactl(&mut self) -> Result<(), String> {
         // Check if the null sink already exists (from a previous run)
         if let Some(existing_id) = find_null_sink_module_id(NULL_SINK_NAME).await {
@@ -123,7 +188,7 @@ impl AudioPipeline {
             return Ok(());
         }
 
-        const MAX_ATTEMPTS: u32 = 5;
+        const MAX_ATTEMPTS: u32 = 10;
         let mut last_err = String::new();
 
         for attempt in 1..=MAX_ATTEMPTS {
@@ -149,11 +214,13 @@ impl AudioPipeline {
 
             last_err = String::from_utf8_lossy(&output.stderr).trim().to_string();
             if attempt < MAX_ATTEMPTS {
+                // Exponential backoff: 1s, 2s, 3s, ... capped at 5s
+                let delay = Duration::from_secs((attempt as u64).min(5));
                 warn!(
-                    "pactl load-module attempt {}/{} failed: {} — retrying in 1s",
-                    attempt, MAX_ATTEMPTS, last_err
+                    "pactl load-module attempt {}/{} failed: {} — retrying in {}s",
+                    attempt, MAX_ATTEMPTS, last_err, delay.as_secs()
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(delay).await;
             }
         }
 

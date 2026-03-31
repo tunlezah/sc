@@ -29,6 +29,7 @@ export function App() {
           trackInfo={state.track_info}
           playbackStatus={state.playback_status}
           ws={ws}
+          activeDevice={state.active_device}
         />
 
         <EQControls
@@ -49,6 +50,8 @@ export function App() {
           castActive={state.cast_active}
           airplayDevices={state.airplay_devices}
           airplayActive={state.airplay_active}
+          lineInActive={state.line_in_active}
+          lineInAvailable={state.line_in_available}
         />
 
         <Settings deviceName={state.device_name} />

@@ -39,7 +39,7 @@ export function Header({ dark, onToggleDark, status, lineInActive, lineInAvailab
   return (
     <header class="header">
       <div class="header-left">
-        <img src="/StreamCastImage.png" alt="SoundSync" class="header-logo" />
+        <img src="/SoundSyncLogo.png" alt="SoundSync" class="header-logo" />
         <div>
           <span class="header-title">SoundSync</span>
           <span class="header-version"> {VERSION}</span>

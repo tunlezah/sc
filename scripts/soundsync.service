@@ -1,13 +1,18 @@
 [Unit]
 Description=SoundSync Bluetooth Audio Receiver
-After=bluetooth.service pipewire.service
+After=bluetooth.service pipewire.service pipewire-pulse.service wireplumber.service
 Wants=pipewire.service wireplumber.service pipewire-pulse.service
+# Ensure Bluetooth and PipeWire are running
+Requires=bluetooth.service
 
 [Service]
 Type=simple
 User=soundsync
 Group=audio
 WorkingDirectory=/opt/soundsync
+# Wait for PipeWire to be fully ready before starting.
+# pipewire-pulse may take a moment after boot to accept connections.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 15); do pactl info >/dev/null 2>&1 && break; echo "Waiting for PipeWire/PulseAudio (attempt $i)..."; sleep 1; done; true'
 # Clean up orphaned SoundSync PulseAudio modules before starting.
 # Prevents duplicate null sinks and loopback modules across restarts.
 ExecStartPre=/bin/bash -c 'pactl list short modules 2>/dev/null | grep -E "module-(null-sink|loopback)" | while read -r id name args; do case "$args" in *soundsync*) pactl unload-module "$id" 2>/dev/null || true ;; esac; done; true'
