@@ -386,6 +386,25 @@ else
     info "No capture process (SoundSync not running)"
 fi
 
+# ── D8: BlueZ5 devices in PipeWire (CRITICAL for BT audio) ─────────────────
+BLUEZ5_DEVICE_COUNT=$(grep -c "device.api.*=.*bluez5\|api.bluez5" "$REPORT_DIR/pw-objects.txt" 2>/dev/null || echo "0")
+if [[ "$BLUEZ5_DEVICE_COUNT" -gt 0 ]]; then
+    ok "WirePlumber BlueZ5 monitor active ($BLUEZ5_DEVICE_COUNT device(s))"
+else
+    fail "No BlueZ5 devices in PipeWire — WirePlumber cannot see Bluetooth hardware"
+    info "  Root cause: libspa-0.2-bluetooth missing OR WirePlumber A2DP config not loaded"
+fi
+
+# ── D9: Default sink routing check ──────────────────────────────────────────
+if [[ "$SVC_SOUNDSYNC" == "active" ]] && $PIPE_NULL_SINK; then
+    if echo "$PIPE_DEFAULT_SINK" | grep -q "soundsync-capture\|effect_input.soundsync-eq"; then
+        ok "Default sink correctly routes to SoundSync pipeline"
+    else
+        fail "Default sink is '$PIPE_DEFAULT_SINK' — BT audio will NOT reach SoundSync"
+        info "  Expected: soundsync-capture or effect_input.soundsync-eq"
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION E: SELF-HEALING REPAIR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -453,12 +472,34 @@ repair_system() {
     run_as_user "systemctl --user daemon-reload" 2>/dev/null || true
     run_as_user "systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service" 2>/dev/null || true
 
-    # ── E5: Fix Bluetooth config ─────────────────────────────────────────────
-    info "Step 5: Checking Bluetooth config..."
+    # ── E5: Install missing SPA plugin ─────────────────────────────────────────
+    info "Step 5a: Checking libspa-0.2-bluetooth..."
+    if ! $BT_SPA_INSTALLED; then
+        if command -v apt-get &>/dev/null; then
+            info "Installing libspa-0.2-bluetooth (MANDATORY for BT audio)..."
+            apt-get install -y -qq libspa-0.2-bluetooth 2>/dev/null || true
+            # Verify installation
+            if find /usr/lib -path "*/spa-0.2/bluez5" -type d 2>/dev/null | grep -q .; then
+                ok "libspa-0.2-bluetooth installed successfully"
+                BT_SPA_INSTALLED=true
+                ACTIONS+=("Installed libspa-0.2-bluetooth")
+            else
+                fail "Failed to install libspa-0.2-bluetooth"
+                FAILURES+=("libspa-0.2-bluetooth installation failed")
+            fi
+        else
+            fail "Cannot auto-install libspa-0.2-bluetooth (apt-get not found)"
+            FAILURES+=("libspa-0.2-bluetooth missing, no package manager")
+        fi
+    fi
+
+    # ── E5b: Fix Bluetooth config ────────────────────────────────────────────
+    info "Step 5b: Checking Bluetooth config..."
     local bt_needs_fix=false
     if [[ ! -f /etc/bluetooth/main.conf ]] || \
        ! grep -q "Class.*=.*0x240414" /etc/bluetooth/main.conf 2>/dev/null || \
-       ! grep -q "DiscoverableTimeout.*=.*0" /etc/bluetooth/main.conf 2>/dev/null; then
+       ! grep -q "DiscoverableTimeout.*=.*0" /etc/bluetooth/main.conf 2>/dev/null || \
+       ! grep -q "Name.*=.*SoundSync" /etc/bluetooth/main.conf 2>/dev/null; then
         bt_needs_fix=true
     fi
 
@@ -479,7 +520,7 @@ Pairable = true
 [Policy]
 AutoEnable = true
 BTCONF
-        ACTIONS+=("Wrote /etc/bluetooth/main.conf with speaker Class")
+        ACTIONS+=("Wrote /etc/bluetooth/main.conf with speaker Class 0x240414")
     fi
 
     # ── E6: Fix WirePlumber A2DP config ──────────────────────────────────────
@@ -582,6 +623,38 @@ WPLUA
         ACTIONS+=("Set Bluetooth discoverable")
     fi
 
+    # Verify Bluetooth adapter state is correct after restart
+    info "Enforcing Bluetooth adapter state..."
+    sleep 1
+    bluetoothctl power on &>/dev/null || true
+    bluetoothctl discoverable on &>/dev/null || true
+    bluetoothctl pairable on &>/dev/null || true
+    sleep 1
+
+    # Verify Class of Device was applied
+    local post_class
+    post_class=$(bluetoothctl show 2>/dev/null | grep -oP 'Class: \K\S+' || echo "unknown")
+    if echo "$post_class" | grep -qi "0x240414"; then
+        ok "Bluetooth Class is now 0x240414 (Speaker)"
+    else
+        warn "Bluetooth Class is $post_class — may need reboot for Class to apply"
+        # Class of Device change sometimes requires hciconfig or reboot
+        if command -v hciconfig &>/dev/null; then
+            hciconfig hci0 class 0x240414 2>/dev/null || true
+            ACTIONS+=("Set BT class via hciconfig")
+        fi
+    fi
+
+    # Verify adapter name
+    local post_name
+    post_name=$(bluetoothctl show 2>/dev/null | grep -oP 'Name: \K.*' || echo "unknown")
+    if [[ "$post_name" == "SoundSync" ]]; then
+        ok "Bluetooth adapter name is SoundSync"
+    else
+        warn "Bluetooth name is '$post_name' (expected SoundSync)"
+        bluetoothctl system-alias SoundSync &>/dev/null || true
+    fi
+
     # SoundSync
     if [[ -f /etc/systemd/system/soundsync.service ]]; then
         systemctl start soundsync 2>/dev/null || true
@@ -594,9 +667,27 @@ WPLUA
         warn "soundsync.service not installed — skipping"
     fi
 
-    # ── E8: Clean duplicate modules ──────────────────────────────────────────
-    info "Step 8: Checking for duplicate modules..."
-    sleep 2  # Give SoundSync time to create its modules
+    # ── E8: Set default sink and clean duplicates ────────────────────────────
+    info "Step 8: Setting default sink and cleaning duplicates..."
+    sleep 3  # Give SoundSync time to create its null sink and start parec
+
+    # Set soundsync-capture as default sink so BT audio routes there
+    if run_as_user "pactl list short sinks 2>/dev/null" | grep -q "soundsync-capture"; then
+        # If EQ is active, use its input as default; otherwise use capture directly
+        if run_as_user "pactl list short sinks 2>/dev/null" | grep -q "effect_input.soundsync-eq"; then
+            run_as_user "pactl set-default-sink effect_input.soundsync-eq" 2>/dev/null || true
+            ok "Default sink set to effect_input.soundsync-eq (EQ enabled)"
+            ACTIONS+=("Set default sink to effect_input.soundsync-eq")
+        else
+            run_as_user "pactl set-default-sink soundsync-capture" 2>/dev/null || true
+            ok "Default sink set to soundsync-capture"
+            ACTIONS+=("Set default sink to soundsync-capture")
+        fi
+    else
+        warn "soundsync-capture sink not found — SoundSync may not have started properly"
+    fi
+
+    # Clean duplicate modules
     local mod_count
     mod_count=$(run_as_user "pactl list short modules 2>/dev/null | grep -c 'soundsync'" || echo "0")
     if [[ "$mod_count" -gt 2 ]]; then
@@ -612,6 +703,29 @@ WPLUA
                 esac
             done
     fi
+
+    # ── E9: Verify WirePlumber BlueZ monitor is active ───────────────────────
+    info "Step 9: Verifying WirePlumber BlueZ5 monitor..."
+    sleep 2
+    local bluez_device
+    bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+    if [[ "$bluez_device" -gt 0 ]]; then
+        ok "WirePlumber BlueZ5 monitor active ($bluez_device device(s) in PipeWire)"
+    else
+        # Check WirePlumber logs for clues
+        local wp_bt_log
+        wp_bt_log=$(run_as_user "journalctl --user -u wireplumber --no-pager -n 30 2>/dev/null" | grep -i "bluez\|bluetooth\|spa.*blue" | tail -5 || echo "")
+        if [[ -n "$wp_bt_log" ]]; then
+            warn "WirePlumber BlueZ5 monitor not detected. WP BT log:"
+            echo "$wp_bt_log" | while read -r line; do info "  $line"; done
+        else
+            warn "No BlueZ5 devices in PipeWire graph — WirePlumber may need restart or libspa-0.2-bluetooth"
+        fi
+        # Not a hard failure if no BT adapter is present on this hardware
+        if bluetoothctl show &>/dev/null; then
+            FAILURES+=("WirePlumber BlueZ5 monitor not active despite BT adapter present")
+        fi
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -619,6 +733,77 @@ WPLUA
 # ═══════════════════════════════════════════════════════════════════════════════
 if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
     repair_system
+
+    # ── Post-repair validation ───────────────────────────────────────────────
+    section "Post-Repair Validation"
+
+    # Re-check critical pipeline state
+    local post_sinks post_default post_objects
+
+    post_sinks=$(run_as_user "pactl list short sinks" 2>/dev/null || echo "")
+    post_default=$(run_as_user "pactl get-default-sink" 2>/dev/null || echo "unknown")
+    post_objects=$(run_as_user "pw-cli list-objects" 2>/dev/null || echo "")
+
+    # Verify null sink
+    if echo "$post_sinks" | grep -q "soundsync-capture"; then
+        ok "POST: soundsync-capture null sink present"
+    else
+        fail "POST: soundsync-capture null sink MISSING"
+        FAILURES+=("soundsync-capture not created after repair")
+    fi
+
+    # Verify default sink routing
+    if echo "$post_default" | grep -q "soundsync-capture\|effect_input.soundsync-eq"; then
+        ok "POST: Default sink routed to SoundSync ($post_default)"
+    else
+        warn "POST: Default sink is '$post_default' — may need manual correction"
+    fi
+
+    # Verify BlueZ5 in PipeWire
+    local post_bluez5
+    post_bluez5=$(echo "$post_objects" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+    if [[ "$post_bluez5" -gt 0 ]]; then
+        ok "POST: WirePlumber BlueZ5 monitor active"
+    else
+        warn "POST: BlueZ5 not yet in PipeWire — may take a few seconds after WP restart"
+    fi
+
+    # Verify BT adapter
+    local post_bt
+    post_bt=$(bluetoothctl show 2>/dev/null || echo "")
+    if echo "$post_bt" | grep -q "Powered: yes"; then
+        ok "POST: Bluetooth adapter powered"
+    else
+        fail "POST: Bluetooth adapter NOT powered"
+    fi
+    if echo "$post_bt" | grep -q "Discoverable: yes"; then
+        ok "POST: Bluetooth adapter discoverable"
+    else
+        fail "POST: Bluetooth adapter NOT discoverable"
+    fi
+
+    # Verify parec capture
+    if pgrep -f "parec" &>/dev/null; then
+        ok "POST: Audio capture (parec) running"
+    else
+        info "POST: parec not running (SoundSync may still be initializing)"
+    fi
+
+    # Verify PipeWire links
+    local post_links
+    post_links=$(run_as_user "pw-link -l" 2>/dev/null || echo "")
+    if echo "$post_links" | grep -q "soundsync-capture.*parec\|parec.*soundsync-capture"; then
+        ok "POST: parec linked to soundsync-capture.monitor"
+    elif [[ "$SVC_SOUNDSYNC" == "active" ]]; then
+        info "POST: Waiting for SoundSync to establish capture links..."
+    fi
+
+    # Save post-repair state
+    echo "$post_sinks" > "$REPORT_DIR/post-repair-sinks.txt"
+    echo "$post_objects" > "$REPORT_DIR/post-repair-pw-objects.txt"
+    echo "$post_links" > "$REPORT_DIR/post-repair-pw-links.txt"
+    echo "$post_bt" > "$REPORT_DIR/post-repair-bt-show.txt"
+
 elif $DIAGNOSE_ONLY; then
     info "Skipping repairs (--diagnose-only)"
 elif [[ ${#ISSUES[@]} -eq 0 ]]; then
@@ -682,6 +867,8 @@ final_status "SoundSync active"          "systemctl is-active soundsync"
 final_status "BT adapter discoverable"   "bluetoothctl show 2>/dev/null | grep -q 'Discoverable: yes'"
 final_status "libspa-0.2-bluetooth"      "find /usr/lib -path '*/spa-0.2/bluez5' -type d 2>/dev/null | grep -q ."
 final_status "WP A2DP sink config"       "test -n '$(find /etc/wireplumber -name '51-soundsync*' 2>/dev/null | head -1)' || test -n '$(find $(eval echo ~${RUN_USER})/.config/wireplumber -name '51-soundsync*' 2>/dev/null | head -1)'"
+final_status "Default sink → SoundSync" "run_as_user 'pactl get-default-sink 2>/dev/null' | grep -q 'soundsync\|effect_input'"
+final_status "BlueZ5 in PipeWire"       "run_as_user 'pw-cli list-objects 2>/dev/null' | grep -q 'bluez5'"
 final_status "XDG_RUNTIME_DIR exists"    "test -d /run/user/${RUN_UID}"
 final_status "DBus session socket"       "test -S /run/user/${RUN_UID}/bus"
 
@@ -737,7 +924,9 @@ if $JSON_OUTPUT; then
   "pipeline": {
     "null_sink": $PIPE_NULL_SINK,
     "eq_sink": $PIPE_EQ_SINK,
-    "default_sink": "$PIPE_DEFAULT_SINK"
+    "default_sink": "$(run_as_user 'pactl get-default-sink' 2>/dev/null || echo "$PIPE_DEFAULT_SINK")",
+    "bluez5_in_pipewire": $(run_as_user 'pw-cli list-objects 2>/dev/null' | grep -q 'bluez5' && echo true || echo false),
+    "capture_running": $(pgrep -f 'parec' &>/dev/null && echo true || echo false)
   },
   "report_dir": "$REPORT_DIR"
 }

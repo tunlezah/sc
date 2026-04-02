@@ -35,3 +35,16 @@
 ## Service File Template vs Generated File Drift
 **Pattern:** The service file template in scripts/soundsync.service drifts from what install.sh actually generates. Missing environment variables (DBUS_SESSION_BUS_ADDRESS, PULSE_RUNTIME_PATH) or wrong User= cause silent failures.
 **Rule:** Keep the template as a reference with REPLACE_* placeholders. The install.sh generated version is the source of truth. Document this clearly in the template.
+
+## No BlueZ5 Device in PipeWire = No Audio
+**Pattern:** Bluetooth appears "connected" at the BlueZ/D-Bus level (bluetoothctl shows connected) but no `bluez_input.*` node appears in PipeWire. Parec captures pure silence. Equalizer shows flat line.
+**Root Cause:** Either `libspa-0.2-bluetooth` is not installed, or WirePlumber lacks `bluez5.roles = [ a2dp_sink ]` config. Without the SPA plugin, WirePlumber cannot register BlueZ5 endpoints, acquire transports, or create PipeWire audio nodes.
+**Rule:** The doctor script must check for `device.api = "bluez5"` in `pw-cli list-objects`. If absent, install the SPA plugin and write the WP config. This is the #1 root cause of "BT connected but no audio."
+
+## Default Sink Must Be soundsync-capture
+**Pattern:** Bluetooth audio flows to whatever PipeWire's default sink is. If the default sink is the ALSA hardware output (e.g., `alsa_output.pci-*`), Bluetooth audio goes to speakers instead of SoundSync's capture pipeline.
+**Rule:** After any service restart, explicitly set the default sink to `soundsync-capture` (or `effect_input.soundsync-eq` if EQ is enabled). The doctor script must enforce this in the repair phase.
+
+## Bluetooth Class of Device Determines Phone Behavior
+**Pattern:** With Class `0x0004010c` (Computer), phones see SoundSync as a laptop and may not offer A2DP streaming. With `0x240414` (Audio/Video + Rendering + Loudspeaker), phones see it as a speaker and auto-stream.
+**Rule:** The doctor script must verify the *runtime* Class of Device via `bluetoothctl show`, not just the config file. If wrong, fix the config AND use `hciconfig hci0 class 0x240414` for immediate effect without reboot.
