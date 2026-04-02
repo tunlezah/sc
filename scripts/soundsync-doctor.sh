@@ -379,6 +379,67 @@ if ! $CONFLICTING_AUDIO; then
     ok "No conflicting audio servers detected"
 fi
 
+# ── C8: D-Bus access to BlueZ (CRITICAL for BT audio) ───────────────────────
+DBUS_BLUEZ_OK=false
+
+# Test if the service user can access org.bluez on the system bus
+DBUS_TEST=$(run_as_user "dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>&1" || echo "FAILED")
+if echo "$DBUS_TEST" | grep -q "array"; then
+    ok "D-Bus access to org.bluez works"
+    DBUS_BLUEZ_OK=true
+else
+    fail "Cannot access org.bluez over system D-Bus — BlueZ5 SPA plugin will fail!"
+    DBUS_ERROR=$(echo "$DBUS_TEST" | head -3)
+    info "  Error: $DBUS_ERROR"
+
+    # Check if user is in bluetooth group
+    if groups "$RUN_USER" 2>/dev/null | grep -q "bluetooth"; then
+        info "  User $RUN_USER IS in bluetooth group"
+    else
+        fail "  User $RUN_USER is NOT in bluetooth group"
+        info "  Fix: sudo usermod -aG bluetooth $RUN_USER"
+    fi
+
+    # Check D-Bus policy file
+    if [[ -f /etc/dbus-1/system.d/bluetooth.conf ]] || [[ -f /usr/share/dbus-1/system.d/bluetooth.conf ]]; then
+        info "  BlueZ D-Bus policy file exists"
+        # Check if it allows access for bluetooth group or at_console users
+        local policy_file
+        policy_file=$(ls /etc/dbus-1/system.d/bluetooth.conf /usr/share/dbus-1/system.d/bluetooth.conf 2>/dev/null | head -1)
+        if grep -q 'group="bluetooth"' "$policy_file" 2>/dev/null; then
+            info "  Policy allows bluetooth group access"
+        elif grep -q 'at_console="true"' "$policy_file" 2>/dev/null; then
+            info "  Policy allows console users"
+        else
+            warn "  D-Bus policy may not allow user access to BlueZ"
+        fi
+    else
+        fail "  No BlueZ D-Bus policy file found!"
+    fi
+fi
+
+# ── C9: SPA BlueZ5 module load test ─────────────────────────────────────────
+SPA_BLUEZ_LOADS=false
+SPA_TEST=$(run_as_user "spa-inspect /usr/lib/x86_64-linux-gnu/spa-0.2/bluez5/libspa-bluez5.so 2>&1" | head -5 || echo "FAILED")
+if echo "$SPA_TEST" | grep -q "factory name.*api.bluez5"; then
+    ok "SPA bluez5 plugin loads and exports factories"
+    SPA_BLUEZ_LOADS=true
+else
+    # Try alternate path
+    SPA_PATH=$(find /usr/lib -name "libspa-bluez5.so" -type f 2>/dev/null | head -1)
+    if [[ -n "$SPA_PATH" ]]; then
+        SPA_TEST=$(run_as_user "spa-inspect $SPA_PATH 2>&1" | head -5 || echo "FAILED")
+        if echo "$SPA_TEST" | grep -q "factory name.*api.bluez5"; then
+            ok "SPA bluez5 plugin loads from $SPA_PATH"
+            SPA_BLUEZ_LOADS=true
+        fi
+    fi
+    if ! $SPA_BLUEZ_LOADS; then
+        warn "SPA bluez5 plugin may have issues loading"
+        info "  $SPA_TEST"
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION D: AUDIO PIPELINE VALIDATION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -615,6 +676,68 @@ BTCONF
         fi
     fi
 
+    # ── E5d: Fix D-Bus access to BlueZ ──────────────────────────────────────
+    if ! $DBUS_BLUEZ_OK; then
+        info "Step 5d: Fixing D-Bus access to BlueZ..."
+
+        # Add user to bluetooth group
+        if ! groups "$RUN_USER" 2>/dev/null | grep -q "bluetooth"; then
+            usermod -aG bluetooth "$RUN_USER" 2>/dev/null || true
+            ok "Added $RUN_USER to bluetooth group"
+            ACTIONS+=("Added $RUN_USER to bluetooth group")
+        fi
+
+        # Ensure D-Bus policy allows bluetooth group
+        local bt_dbus_policy="/etc/dbus-1/system.d/bluetooth.conf"
+        if [[ ! -f "$bt_dbus_policy" ]]; then
+            bt_dbus_policy="/usr/share/dbus-1/system.d/bluetooth.conf"
+        fi
+
+        if [[ -f "$bt_dbus_policy" ]]; then
+            # Check if policy already allows bluetooth group
+            if ! grep -q 'group="bluetooth"' "$bt_dbus_policy" 2>/dev/null; then
+                # Create a supplementary policy that grants bluetooth group access
+                cat > /etc/dbus-1/system.d/soundsync-bluetooth.conf << 'DBUSCONF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <!-- Allow bluetooth group to access BlueZ (needed for PipeWire/WirePlumber) -->
+  <policy group="bluetooth">
+    <allow send_destination="org.bluez"/>
+    <allow send_interface="org.bluez.Agent1"/>
+    <allow send_interface="org.bluez.MediaEndpoint1"/>
+    <allow send_interface="org.bluez.MediaTransport1"/>
+    <allow send_interface="org.bluez.Profile1"/>
+    <allow send_interface="org.freedesktop.DBus.ObjectManager"/>
+    <allow send_interface="org.freedesktop.DBus.Properties"/>
+  </policy>
+</busconfig>
+DBUSCONF
+                ok "Created D-Bus policy: /etc/dbus-1/system.d/soundsync-bluetooth.conf"
+                ACTIONS+=("Created D-Bus policy for bluetooth group")
+
+                # Reload D-Bus to pick up new policy
+                systemctl reload dbus 2>/dev/null || killall -HUP dbus-daemon 2>/dev/null || true
+                sleep 1
+                ACTIONS+=("Reloaded D-Bus daemon")
+            else
+                info "D-Bus policy already allows bluetooth group"
+            fi
+        fi
+
+        # Verify D-Bus access now works
+        local dbus_recheck
+        dbus_recheck=$(run_as_user "dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>&1" || echo "FAILED")
+        if echo "$dbus_recheck" | grep -q "array"; then
+            ok "D-Bus access to org.bluez now works"
+            DBUS_BLUEZ_OK=true
+        else
+            warn "D-Bus access still failing — user may need to log out and back in for group change"
+            info "  Workaround: the service restart later will use the updated group membership"
+            FAILURES+=("D-Bus access to org.bluez still failing after group fix")
+        fi
+    fi
+
     # ── E6: Fix WirePlumber A2DP config ──────────────────────────────────────
     info "Step 6: Checking WirePlumber A2DP config..."
 
@@ -680,6 +803,31 @@ WPLUA
 
     # ── E7: Restart services in order with verification ──────────────────────
     info "Step 7: Restarting services..."
+    info "  Order: Bluetooth FIRST → PipeWire → PipeWire-Pulse → WirePlumber"
+    info "  (WirePlumber must start AFTER Bluetooth is stable to avoid proxy destroyed)"
+
+    # Bluetooth FIRST — must be stable before WirePlumber starts
+    systemctl restart bluetooth 2>/dev/null || true
+    sleep 2
+    if wait_for_system_service "bluetooth" 10; then
+        ok "bluetooth restarted"; ACTIONS+=("Restarted bluetooth")
+    else
+        fail "bluetooth failed to restart"; FAILURES+=("bluetooth failed to restart")
+    fi
+
+    # Verify Bluetooth adapter is ready
+    sleep 1
+    local bt_check
+    bt_check=$(bluetoothctl show 2>/dev/null || echo "")
+
+    # Wait for BlueZ to fully register on D-Bus
+    for _btw in 1 2 3 4 5; do
+        if run_as_user "dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>/dev/null" | grep -q "array" 2>/dev/null; then
+            ok "BlueZ D-Bus ready"
+            break
+        fi
+        sleep 1
+    done
 
     # PipeWire
     run_as_user "systemctl --user start pipewire.service" 2>/dev/null || true
@@ -697,15 +845,7 @@ WPLUA
         fail "pipewire-pulse failed to start"; FAILURES+=("pipewire-pulse failed to start")
     fi
 
-    # WirePlumber
-    run_as_user "systemctl --user start wireplumber.service" 2>/dev/null || true
-    if wait_for_user_service "wireplumber" 10; then
-        ok "wireplumber started"; ACTIONS+=("Started wireplumber")
-    else
-        fail "wireplumber failed to start"; FAILURES+=("wireplumber failed to start")
-    fi
-
-    # Verify PipeWire accepts commands
+    # Verify PipeWire accepts commands BEFORE starting WirePlumber
     if wait_for_pipewire_ready 15; then
         ok "PipeWire ready (pactl responding)"
     else
@@ -713,19 +853,16 @@ WPLUA
         FAILURES+=("PipeWire not responding to pactl")
     fi
 
-    # Bluetooth
-    systemctl restart bluetooth 2>/dev/null || true
-    sleep 2
-    if wait_for_system_service "bluetooth" 10; then
-        ok "bluetooth restarted"; ACTIONS+=("Restarted bluetooth")
+    # WirePlumber LAST — needs both PipeWire and Bluetooth stable
+    run_as_user "systemctl --user start wireplumber.service" 2>/dev/null || true
+    if wait_for_user_service "wireplumber" 10; then
+        ok "wireplumber started"; ACTIONS+=("Started wireplumber")
     else
-        fail "bluetooth failed to restart"; FAILURES+=("bluetooth failed to restart")
+        fail "wireplumber failed to start"; FAILURES+=("wireplumber failed to start")
     fi
 
-    # Verify Bluetooth adapter
-    sleep 1
-    local bt_check
-    bt_check=$(bluetoothctl show 2>/dev/null || echo "")
+    # Give WirePlumber time to enumerate BlueZ devices
+    sleep 3
     if echo "$bt_check" | grep -q "Powered: yes"; then
         ok "Bluetooth adapter powered after restart"
     else
