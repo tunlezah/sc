@@ -325,8 +325,16 @@ else
                "$(eval echo "~${RUN_USER}")/.config/wireplumber/bluetooth.lua.d"; do
         for f in "$dir"/51-soundsync*; do
             if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
-                ok "WirePlumber A2DP config found: $f (correct format for WP 0.4.x)"
-                WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
+                # Check if config uses BROKEN table-replacement syntax
+                if grep -q 'bluez_monitor\.properties\s*=' "$f" 2>/dev/null; then
+                    fail "Found $f but it uses table-replacement syntax (wipes defaults!)"
+                    info "  Must use: bluez_monitor.properties[\"key\"] = value"
+                    info "  Not:      bluez_monitor.properties = { ... }"
+                    WP_A2DP_WRONG_FORMAT=true
+                else
+                    ok "WirePlumber A2DP config found: $f (correct format for WP 0.4.x)"
+                    WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
+                fi
                 break 2
             fi
         done
@@ -610,14 +618,19 @@ BTCONF
     # ── E6: Fix WirePlumber A2DP config ──────────────────────────────────────
     info "Step 6: Checking WirePlumber A2DP config..."
 
-    # If wrong format exists, remove it first
+    # If wrong format exists, remove ALL old soundsync WP configs first
     if $WP_A2DP_WRONG_FORMAT; then
-        info "Removing wrong-format WP config..."
-        for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*; do
-            if [[ -f "$f" ]]; then
-                rm -f "$f"
-                ACTIONS+=("Removed wrong-format WP config: $f")
-            fi
+        info "Removing wrong-format WP config files..."
+        for searchdir in \
+            /etc/wireplumber/wireplumber.conf.d \
+            /etc/wireplumber/bluetooth.lua.d \
+            "$(eval echo "~${RUN_USER}")/.config/wireplumber/bluetooth.lua.d"; do
+            for f in "$searchdir"/51-soundsync*; do
+                if [[ -f "$f" ]]; then
+                    rm -f "$f"
+                    ACTIONS+=("Removed wrong-format WP config: $f")
+                fi
+            done
         done
     fi
 
