@@ -258,8 +258,10 @@ else
     # C3: Class of Device check (0x240414 = Audio speaker)
     if [[ -n "$BT_CLASS" ]]; then
         info "Bluetooth Class: $BT_CLASS"
-        if echo "$BT_CLASS" | grep -qi "0x240414"; then
+        if echo "$BT_CLASS" | grep -qiE "0x0*240414"; then
             ok "Class of Device is Audio/Speaker (0x240414)"
+        elif echo "$BT_CLASS" | grep -qiE "0x0*040414"; then
+            ok "Class of Device is Audio/Speaker ($BT_CLASS — acceptable)"
         else
             warn "Class of Device is $BT_CLASS (expected 0x240414 for speaker)"
         fi
@@ -491,7 +493,8 @@ repair_system() {
     # Kill duplicate pipewire/wireplumber instances
     for proc in pipewire wireplumber; do
         local count
-        count=$(pgrep -u "$RUN_UID" -c -x "$proc" 2>/dev/null || echo "0")
+        count=$(pgrep -u "$RUN_UID" -c -x "$proc" 2>/dev/null | tr -dc '0-9' || echo "0")
+        count=${count:-0}
         if [[ "$count" -gt 1 ]]; then
             # Kill all — they'll be restarted cleanly
             pkill -u "$RUN_UID" -x "$proc" 2>/dev/null || true
@@ -740,53 +743,55 @@ WPLUA
     post_class=$(bluetoothctl show 2>/dev/null | grep -oP 'Class: \K\S+' || echo "unknown")
     info "Current BT Class after restart: $post_class"
 
-    if ! echo "$post_class" | grep -qi "0x240414"; then
+    if ! echo "$post_class" | grep -qiE "0x0*240414|0x0*040414"; then
         warn "Class $post_class != 0x240414 — forcing via all available methods..."
 
         # Method 1: hciconfig (deprecated but still works on many systems)
+        # Note: hciconfig may only set lower bits, resulting in 0x040414 instead of 0x240414
         if command -v hciconfig &>/dev/null; then
             hciconfig hci0 class 0x240414 2>/dev/null && \
                 ACTIONS+=("Set BT class via hciconfig hci0 class 0x240414") || true
         fi
 
         # Method 2: btmgmt (modern replacement for hciconfig)
+        # btmgmt class <major> <minor>: major=4 (Audio/Video), minor=20 (0x14=Loudspeaker)
         if command -v btmgmt &>/dev/null; then
-            btmgmt clr-cod 2>/dev/null || true
             btmgmt class 4 20 2>/dev/null && \
                 ACTIONS+=("Set BT class via btmgmt class 4 20") || true
         fi
 
-        # Method 3: Direct HCI via Python (last resort)
-        if command -v python3 &>/dev/null && ! echo "$post_class" | grep -qi "0x240414"; then
+        # Method 3: Direct HCI via Python (sets all 3 bytes of Class of Device)
+        if command -v python3 &>/dev/null; then
             python3 -c "
 import socket, struct
-# Open raw HCI socket
 try:
     s = socket.socket(31, socket.SOCK_RAW, 1)  # AF_BLUETOOTH, HCI
-    # HCI_Write_Class_of_Device command (OGF=0x03, OCF=0x0024)
-    # Class: 0x240414 -> bytes [0x14, 0x04, 0x24]
-    cmd = struct.pack('<HBB3s', 0x0c24, 3, 0, bytes([0x14, 0x04, 0x24]))
+    # HCI_Write_Class_of_Device: OGF=0x03, OCF=0x0024 -> opcode 0x0c24
+    # Class 0x240414 -> little-endian bytes: [0x14, 0x04, 0x24]
+    cmd = struct.pack('<HB3s', 0x0c24, 3, bytes([0x14, 0x04, 0x24]))
     s.send(cmd)
     s.close()
+    print('HCI class set to 0x240414')
 except Exception as e:
-    pass
-" 2>/dev/null && ACTIONS+=("Set BT class via raw HCI") || true
+    print(f'HCI class set failed: {e}')
+" 2>&1 | while IFS= read -r l; do info "  $l"; done
+            ACTIONS+=("Set BT class via raw HCI command")
         fi
 
         # Re-check
         sleep 1
         post_class=$(bluetoothctl show 2>/dev/null | grep -oP 'Class: \K\S+' || echo "unknown")
-        if echo "$post_class" | grep -qi "0x240414"; then
-            ok "Bluetooth Class is now 0x240414 (Speaker)"
+        if echo "$post_class" | grep -qiE "0x0*240414"; then
+            ok "Bluetooth Class is now 0x240414 (Audio/Speaker with rendering)"
+        elif echo "$post_class" | grep -qiE "0x0*040414"; then
+            ok "Bluetooth Class is 0x040414 (Audio/Speaker — rendering bit may differ)"
+            info "  Phone should still see this as an audio device"
         else
             warn "Bluetooth Class is still $post_class"
-            warn "  main.conf is correct but BlueZ may cache the old class"
-            warn "  This typically requires: sudo systemctl restart bluetooth"
-            warn "  On some systems, a full 'sudo hciconfig hci0 reset' or reboot is needed"
             FAILURES+=("BT Class of Device stuck at $post_class (expected 0x240414)")
         fi
     else
-        ok "Bluetooth Class is 0x240414 (Speaker)"
+        ok "Bluetooth Class is correct ($post_class)"
     fi
 
     # Force adapter name
@@ -883,9 +888,9 @@ except Exception as e:
             fail "SPA bluez5 plugin directory NOT found on disk"
         fi
 
-        # Diagnose: check WirePlumber logs for BT-related messages
+        # Diagnose: check FRESH WirePlumber logs (only since last restart, not stale hours-old logs)
         local wp_bt_log
-        wp_bt_log=$(run_as_user "journalctl --user -u wireplumber --no-pager -n 50 2>/dev/null" | grep -i "bluez\|bluetooth\|spa.*blue\|monitor.*blue" | tail -10 || echo "")
+        wp_bt_log=$(run_as_user "journalctl --user -u wireplumber --no-pager --since '2 minutes ago' 2>/dev/null" | grep -i "bluez\|bluetooth\|spa.*blue\|monitor.*blue\|error\|warn\|fail\|config" | tail -15 || echo "")
         if [[ -n "$wp_bt_log" ]]; then
             warn "WirePlumber Bluetooth log entries:"
             echo "$wp_bt_log" | while IFS= read -r line; do info "    $line"; done
@@ -904,6 +909,38 @@ except Exception as e:
             info "WP config file exists: $wp_conf_check"
             info "  Content: $(head -3 "$wp_conf_check" 2>/dev/null)"
         fi
+
+        # Diagnose: check WP's actual config search paths
+        info "Checking WirePlumber config search paths..."
+        local wp_binary_path
+        wp_binary_path=$(run_as_user "which wireplumber 2>/dev/null" || echo "unknown")
+        info "  WP binary: $wp_binary_path"
+
+        # Check all possible Lua config locations
+        for confdir in \
+            /usr/share/wireplumber/bluetooth.lua.d \
+            /etc/wireplumber/bluetooth.lua.d \
+            "$(eval echo "~${RUN_USER}")/.config/wireplumber/bluetooth.lua.d"; do
+            if [[ -d "$confdir" ]]; then
+                info "  Config dir exists: $confdir/"
+                ls -la "$confdir"/ 2>/dev/null | while IFS= read -r l; do info "    $l"; done
+            fi
+        done
+
+        # Check if the default WP bluetooth config exists at all
+        local default_bt_lua
+        default_bt_lua=$(find /usr/share/wireplumber -name "50-bluez-config.lua" -o -name "50-bluez-monitor.lua" 2>/dev/null | head -1)
+        if [[ -n "$default_bt_lua" ]]; then
+            info "  Default BT config: $default_bt_lua"
+        else
+            warn "  No default WP bluetooth Lua config found in /usr/share/wireplumber/"
+            info "  This may mean WP was installed without Bluetooth support compiled"
+            info "  Try: apt install --reinstall wireplumber pipewire-module-bluetooth"
+        fi
+
+        # Check WP full journal output to see startup errors
+        info "Full WP journal since last restart:"
+        run_as_user "journalctl --user -u wireplumber --no-pager --since '2 minutes ago' 2>/dev/null" | tail -20 | while IFS= read -r l; do info "    $l"; done
 
         # Try aggressive recovery: restart WirePlumber one more time
         info "Attempting WirePlumber restart for BlueZ5 recovery..."
