@@ -80,12 +80,14 @@ REPORT_DIR="/tmp/soundsync-doctor-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$REPORT_DIR"
 
 # ── Run command as the PipeWire session user ─────────────────────────────────
+# Usage: run_as_user "command arg1 arg2"
+# The entire command string must be ONE quoted argument.
 run_as_user() {
+    local cmd="$1"
     if [[ "$(whoami)" == "$RUN_USER" ]]; then
-        eval "$@"
+        bash -c "export XDG_RUNTIME_DIR=/run/user/${RUN_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus; $cmd"
     else
-        su - "$RUN_USER" -s /bin/bash -c \
-            "export XDG_RUNTIME_DIR=/run/user/${RUN_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus; $*"
+        su - "$RUN_USER" -s /bin/bash -c "export XDG_RUNTIME_DIR=/run/user/${RUN_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus; $cmd"
     fi
 }
 
@@ -819,43 +821,94 @@ except Exception as e:
 
     # ── E10: Final verification output (same commands user would run) ────────
     section "Verification Output"
-    info "Running the same verification commands you'd run manually:"
+    info "Running verification commands as user '$RUN_USER':"
+
+    # First verify pactl is working at all
+    if ! run_as_user "pactl info >/dev/null 2>&1"; then
+        fail "pactl cannot connect to PipeWire — audio commands will fail"
+        info "  Checking if pipewire-pulse is running..."
+        run_as_user "systemctl --user status pipewire-pulse 2>&1" | head -5 | while IFS= read -r l; do info "    $l"; done
+        info "  Checking PULSE_SERVER / socket..."
+        info "    /run/user/${RUN_UID}/pulse/native exists: $(test -S /run/user/${RUN_UID}/pulse/native && echo yes || echo NO)"
+        info "    /run/user/${RUN_UID}/pipewire-0 exists:   $(test -S /run/user/${RUN_UID}/pipewire-0 && echo yes || echo NO)"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}pw-cli list-objects | grep bluez5:${NC}"
+    # 1. BlueZ5 in PipeWire
+    echo -e "  ${BOLD}$ pw-cli list-objects | grep bluez5${NC}"
     local v_bluez
-    v_bluez=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep "bluez5" || echo "    (no bluez5 entries)")
-    echo "$v_bluez" | head -10 | while IFS= read -r line; do echo "    $line"; done
+    v_bluez=$(run_as_user "pw-cli list-objects 2>&1" | grep -i "bluez5" || true)
+    if [[ -n "$v_bluez" ]]; then
+        echo "$v_bluez" | head -10 | while IFS= read -r line; do echo "    $line"; done
+    else
+        echo -e "    ${RED}(no bluez5 entries — WirePlumber BlueZ monitor not active)${NC}"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}pactl get-default-sink:${NC}"
+    # 2. Default sink
+    echo -e "  ${BOLD}$ pactl get-default-sink${NC}"
     local v_sink
-    v_sink=$(run_as_user "pactl get-default-sink 2>/dev/null" || echo "    (unknown)")
-    echo "    $v_sink"
+    v_sink=$(run_as_user "pactl get-default-sink 2>&1" || true)
+    if [[ -n "$v_sink" ]]; then
+        echo "    $v_sink"
+    else
+        echo -e "    ${RED}(could not query default sink)${NC}"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}bluetoothctl show | grep -E 'Class|Name|Discoverable':${NC}"
-    bluetoothctl show 2>/dev/null | grep -E "Class:|Name:|Discoverable:" | while IFS= read -r line; do echo "    $line"; done
+    # 3. Bluetooth adapter
+    echo -e "  ${BOLD}$ bluetoothctl show | grep -E 'Class|Name|Alias|Discoverable'${NC}"
+    local v_bt
+    v_bt=$(bluetoothctl show 2>/dev/null | grep -E "Class:|Name:|Alias:|Discoverable:" || true)
+    if [[ -n "$v_bt" ]]; then
+        echo "$v_bt" | while IFS= read -r line; do echo "    $line"; done
+    else
+        echo -e "    ${RED}(no Bluetooth adapter found)${NC}"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}pw-link -l | grep soundsync:${NC}"
+    # 4. PipeWire links
+    echo -e "  ${BOLD}$ pw-link -l | grep soundsync${NC}"
     local v_links
-    v_links=$(run_as_user "pw-link -l 2>/dev/null" | grep "soundsync" || echo "    (no soundsync links)")
-    echo "$v_links" | head -10 | while IFS= read -r line; do echo "    $line"; done
+    v_links=$(run_as_user "pw-link -l 2>&1" | grep -i "soundsync" || true)
+    if [[ -n "$v_links" ]]; then
+        echo "$v_links" | head -15 | while IFS= read -r line; do echo "    $line"; done
+    else
+        echo -e "    ${YELLOW}(no soundsync links — service may still be starting)${NC}"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}pactl list short sources | grep bluez_input:${NC}"
+    # 5. Bluetooth audio sources
+    echo -e "  ${BOLD}$ pactl list short sources | grep bluez_input${NC}"
     local v_bt_src
-    v_bt_src=$(run_as_user "pactl list short sources 2>/dev/null" | grep "bluez_input" || echo "    (none — connect a phone to see BT audio nodes)")
-    echo "$v_bt_src" | while IFS= read -r line; do echo "    $line"; done
+    v_bt_src=$(run_as_user "pactl list short sources 2>&1" | grep "bluez_input" || true)
+    if [[ -n "$v_bt_src" ]]; then
+        echo "$v_bt_src" | while IFS= read -r line; do echo "    $line"; done
+    else
+        echo -e "    ${YELLOW}(none — pair and play from a phone to see BT audio nodes)${NC}"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}pactl list short sinks:${NC}"
-    run_as_user "pactl list short sinks 2>/dev/null" | while IFS= read -r line; do echo "    $line"; done
+    # 6. All sinks
+    echo -e "  ${BOLD}$ pactl list short sinks${NC}"
+    local v_sinks
+    v_sinks=$(run_as_user "pactl list short sinks 2>&1" || true)
+    if [[ -n "$v_sinks" ]]; then
+        echo "$v_sinks" | while IFS= read -r line; do echo "    $line"; done
+    else
+        echo -e "    ${RED}(no sinks — PipeWire may not be running)${NC}"
+    fi
     echo ""
 
-    echo -e "  ${BOLD}pactl list short modules | grep soundsync:${NC}"
-    run_as_user "pactl list short modules 2>/dev/null" | grep "soundsync" | while IFS= read -r line; do echo "    $line"; done
+    # 7. SoundSync modules
+    echo -e "  ${BOLD}$ pactl list short modules | grep soundsync${NC}"
+    local v_mods
+    v_mods=$(run_as_user "pactl list short modules 2>&1" | grep "soundsync" || true)
+    if [[ -n "$v_mods" ]]; then
+        echo "$v_mods" | while IFS= read -r line; do echo "    $line"; done
+    else
+        echo -e "    ${YELLOW}(no soundsync modules — service creates these on start)${NC}"
+    fi
     echo ""
 }
 
@@ -869,11 +922,9 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
     section "Post-Repair Validation"
 
     # Re-check critical pipeline state
-    local post_sinks post_default post_objects
-
-    post_sinks=$(run_as_user "pactl list short sinks" 2>/dev/null || echo "")
-    post_default=$(run_as_user "pactl get-default-sink" 2>/dev/null || echo "unknown")
-    post_objects=$(run_as_user "pw-cli list-objects" 2>/dev/null || echo "")
+    post_sinks=$(run_as_user "pactl list short sinks 2>/dev/null" || echo "")
+    post_default=$(run_as_user "pactl get-default-sink 2>/dev/null" || echo "unknown")
+    post_objects=$(run_as_user "pw-cli list-objects 2>/dev/null" || echo "")
 
     # Verify null sink
     if echo "$post_sinks" | grep -q "soundsync-capture"; then
@@ -891,7 +942,6 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
     fi
 
     # Verify BlueZ5 in PipeWire
-    local post_bluez5
     post_bluez5=$(echo "$post_objects" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
     if [[ "$post_bluez5" -gt 0 ]]; then
         ok "POST: WirePlumber BlueZ5 monitor active"
@@ -900,7 +950,6 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
     fi
 
     # Verify BT adapter
-    local post_bt
     post_bt=$(bluetoothctl show 2>/dev/null || echo "")
     if echo "$post_bt" | grep -q "Powered: yes"; then
         ok "POST: Bluetooth adapter powered"
@@ -921,8 +970,7 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
     fi
 
     # Verify PipeWire links
-    local post_links
-    post_links=$(run_as_user "pw-link -l" 2>/dev/null || echo "")
+    post_links=$(run_as_user "pw-link -l 2>/dev/null" || echo "")
     if echo "$post_links" | grep -q "soundsync-capture.*parec\|parec.*soundsync-capture"; then
         ok "POST: parec linked to soundsync-capture.monitor"
     elif [[ "$SVC_SOUNDSYNC" == "active" ]]; then
