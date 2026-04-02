@@ -54,6 +54,11 @@
 **Root Cause:** The version detection code wrote the correct format, but a previous run (or the old doctor script) wrote the wrong format. The diagnostic only checked "does any file with a2dp_sink exist?" without verifying it matches the WP version.
 **Rule:** ALWAYS verify the config format matches the detected WP version. If WP is 0.4.x, only Lua configs in `bluetooth.lua.d/` count. Clean up wrong-format configs from other directories.
 
+## WP 0.4.x Lua: Never Replace bluez_monitor.properties Table
+**Pattern:** Writing `bluez_monitor.properties = { ["bluez5.roles"] = "[ a2dp_sink ]" }` in a Lua override file completely replaces the properties table, wiping all defaults from `50-bluez-config.lua` — including the critical `["with-logind"] = true`. Without logind integration, the BlueZ monitor never activates for the user session, and zero bluez5 devices appear in PipeWire.
+**Fix:** Use individual property assignment: `bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink ]"`. This preserves all existing defaults while adding/overriding only the specific properties needed.
+**Impact:** This was the actual root cause of "Bluetooth connects but no audio" — the SPA plugin was installed, the config file existed in the right directory, WirePlumber was running, but the BlueZ monitor silently failed to activate because logind integration was wiped.
+
 ## "Unknown Transport" = Competing Audio Server
 **Pattern:** WirePlumber logs "Properties changed in unknown transport... Multiple sound server instances" when another process (PulseAudio daemon, bluez-alsa) registers competing Bluetooth endpoints with BlueZ. WirePlumber cannot acquire the transport and never creates `bluez_input.*` nodes.
 **Rule:** The doctor script must detect and stop PulseAudio (the real daemon, not PipeWire-pulse) and bluez-alsa before restarting audio services. Check with `pgrep -x pulseaudio` and `pgrep -f bluealsa`.
