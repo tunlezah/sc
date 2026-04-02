@@ -623,36 +623,84 @@ WPLUA
         ACTIONS+=("Set Bluetooth discoverable")
     fi
 
-    # Verify Bluetooth adapter state is correct after restart
-    info "Enforcing Bluetooth adapter state..."
-    sleep 1
+    # ── E7b: Force Bluetooth adapter state ─────────────────────────────────────
+    info "Step 7b: Enforcing Bluetooth adapter state..."
+    sleep 2
+
+    # Force adapter power, discoverable, pairable via bluetoothctl
     bluetoothctl power on &>/dev/null || true
+    sleep 1
     bluetoothctl discoverable on &>/dev/null || true
     bluetoothctl pairable on &>/dev/null || true
     sleep 1
 
-    # Verify Class of Device was applied
+    # Force Class of Device via multiple methods
     local post_class
     post_class=$(bluetoothctl show 2>/dev/null | grep -oP 'Class: \K\S+' || echo "unknown")
-    if echo "$post_class" | grep -qi "0x240414"; then
-        ok "Bluetooth Class is now 0x240414 (Speaker)"
-    else
-        warn "Bluetooth Class is $post_class — may need reboot for Class to apply"
-        # Class of Device change sometimes requires hciconfig or reboot
+    info "Current BT Class after restart: $post_class"
+
+    if ! echo "$post_class" | grep -qi "0x240414"; then
+        warn "Class $post_class != 0x240414 — forcing via all available methods..."
+
+        # Method 1: hciconfig (deprecated but still works on many systems)
         if command -v hciconfig &>/dev/null; then
-            hciconfig hci0 class 0x240414 2>/dev/null || true
-            ACTIONS+=("Set BT class via hciconfig")
+            hciconfig hci0 class 0x240414 2>/dev/null && \
+                ACTIONS+=("Set BT class via hciconfig hci0 class 0x240414") || true
         fi
+
+        # Method 2: btmgmt (modern replacement for hciconfig)
+        if command -v btmgmt &>/dev/null; then
+            btmgmt clr-cod 2>/dev/null || true
+            btmgmt class 4 20 2>/dev/null && \
+                ACTIONS+=("Set BT class via btmgmt class 4 20") || true
+        fi
+
+        # Method 3: Direct HCI via Python (last resort)
+        if command -v python3 &>/dev/null && ! echo "$post_class" | grep -qi "0x240414"; then
+            python3 -c "
+import socket, struct
+# Open raw HCI socket
+try:
+    s = socket.socket(31, socket.SOCK_RAW, 1)  # AF_BLUETOOTH, HCI
+    # HCI_Write_Class_of_Device command (OGF=0x03, OCF=0x0024)
+    # Class: 0x240414 -> bytes [0x14, 0x04, 0x24]
+    cmd = struct.pack('<HBB3s', 0x0c24, 3, 0, bytes([0x14, 0x04, 0x24]))
+    s.send(cmd)
+    s.close()
+except Exception as e:
+    pass
+" 2>/dev/null && ACTIONS+=("Set BT class via raw HCI") || true
+        fi
+
+        # Re-check
+        sleep 1
+        post_class=$(bluetoothctl show 2>/dev/null | grep -oP 'Class: \K\S+' || echo "unknown")
+        if echo "$post_class" | grep -qi "0x240414"; then
+            ok "Bluetooth Class is now 0x240414 (Speaker)"
+        else
+            warn "Bluetooth Class is still $post_class"
+            warn "  main.conf is correct but BlueZ may cache the old class"
+            warn "  This typically requires: sudo systemctl restart bluetooth"
+            warn "  On some systems, a full 'sudo hciconfig hci0 reset' or reboot is needed"
+            FAILURES+=("BT Class of Device stuck at $post_class (expected 0x240414)")
+        fi
+    else
+        ok "Bluetooth Class is 0x240414 (Speaker)"
     fi
 
-    # Verify adapter name
+    # Force adapter name
     local post_name
     post_name=$(bluetoothctl show 2>/dev/null | grep -oP 'Name: \K.*' || echo "unknown")
-    if [[ "$post_name" == "SoundSync" ]]; then
-        ok "Bluetooth adapter name is SoundSync"
-    else
-        warn "Bluetooth name is '$post_name' (expected SoundSync)"
+    if [[ "$post_name" != "SoundSync" ]]; then
+        info "BT name is '$post_name', setting to SoundSync..."
         bluetoothctl system-alias SoundSync &>/dev/null || true
+        # Also try via btmgmt
+        if command -v btmgmt &>/dev/null; then
+            btmgmt name SoundSync 2>/dev/null || true
+        fi
+        ACTIONS+=("Set Bluetooth name to SoundSync")
+    else
+        ok "Bluetooth adapter name is SoundSync"
     fi
 
     # SoundSync
@@ -706,26 +754,109 @@ WPLUA
 
     # ── E9: Verify WirePlumber BlueZ monitor is active ───────────────────────
     info "Step 9: Verifying WirePlumber BlueZ5 monitor..."
-    sleep 2
-    local bluez_device
-    bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+
+    # WirePlumber may need a few seconds after start to enumerate BT devices
+    local bluez_device=0
+    for attempt in 1 2 3 4 5; do
+        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+        if [[ "$bluez_device" -gt 0 ]]; then
+            break
+        fi
+        sleep 2
+    done
+
     if [[ "$bluez_device" -gt 0 ]]; then
         ok "WirePlumber BlueZ5 monitor active ($bluez_device device(s) in PipeWire)"
     else
-        # Check WirePlumber logs for clues
-        local wp_bt_log
-        wp_bt_log=$(run_as_user "journalctl --user -u wireplumber --no-pager -n 30 2>/dev/null" | grep -i "bluez\|bluetooth\|spa.*blue" | tail -5 || echo "")
-        if [[ -n "$wp_bt_log" ]]; then
-            warn "WirePlumber BlueZ5 monitor not detected. WP BT log:"
-            echo "$wp_bt_log" | while read -r line; do info "  $line"; done
+        warn "No BlueZ5 devices in PipeWire graph after 10s"
+
+        # Diagnose: check if SPA plugin files exist
+        local spa_bluez_path
+        spa_bluez_path=$(find /usr/lib -path "*/spa-0.2/bluez5" -type d 2>/dev/null | head -1)
+        if [[ -n "$spa_bluez_path" ]]; then
+            info "SPA bluez5 plugin dir exists: $spa_bluez_path"
+            info "  Contents: $(ls "$spa_bluez_path" 2>/dev/null | tr '\n' ' ')"
         else
-            warn "No BlueZ5 devices in PipeWire graph — WirePlumber may need restart or libspa-0.2-bluetooth"
+            fail "SPA bluez5 plugin directory NOT found on disk"
         fi
-        # Not a hard failure if no BT adapter is present on this hardware
-        if bluetoothctl show &>/dev/null; then
-            FAILURES+=("WirePlumber BlueZ5 monitor not active despite BT adapter present")
+
+        # Diagnose: check WirePlumber logs for BT-related messages
+        local wp_bt_log
+        wp_bt_log=$(run_as_user "journalctl --user -u wireplumber --no-pager -n 50 2>/dev/null" | grep -i "bluez\|bluetooth\|spa.*blue\|monitor.*blue" | tail -10 || echo "")
+        if [[ -n "$wp_bt_log" ]]; then
+            warn "WirePlumber Bluetooth log entries:"
+            echo "$wp_bt_log" | while IFS= read -r line; do info "    $line"; done
+        else
+            warn "No Bluetooth mentions in WirePlumber journal — SPA plugin may not be loading"
+        fi
+
+        # Diagnose: check if WirePlumber config is actually being read
+        local wp_conf_check=""
+        if [[ -f /etc/wireplumber/wireplumber.conf.d/51-soundsync.conf ]]; then
+            wp_conf_check="/etc/wireplumber/wireplumber.conf.d/51-soundsync.conf"
+        elif [[ -f /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua ]]; then
+            wp_conf_check="/etc/wireplumber/bluetooth.lua.d/51-soundsync.lua"
+        fi
+        if [[ -n "$wp_conf_check" ]]; then
+            info "WP config file exists: $wp_conf_check"
+            info "  Content: $(head -3 "$wp_conf_check" 2>/dev/null)"
+        fi
+
+        # Try aggressive recovery: restart WirePlumber one more time
+        info "Attempting WirePlumber restart for BlueZ5 recovery..."
+        run_as_user "systemctl --user restart wireplumber" 2>/dev/null || true
+        sleep 5
+        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+        if [[ "$bluez_device" -gt 0 ]]; then
+            ok "WirePlumber BlueZ5 monitor active after re-restart ($bluez_device device(s))"
+            ACTIONS+=("Re-restarted WirePlumber to activate BlueZ5 monitor")
+        else
+            if bluetoothctl show &>/dev/null; then
+                FAILURES+=("WirePlumber BlueZ5 monitor not active despite BT adapter present")
+            fi
         fi
     fi
+
+    # ── E10: Final verification output (same commands user would run) ────────
+    section "Verification Output"
+    info "Running the same verification commands you'd run manually:"
+    echo ""
+
+    echo -e "  ${BOLD}pw-cli list-objects | grep bluez5:${NC}"
+    local v_bluez
+    v_bluez=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep "bluez5" || echo "    (no bluez5 entries)")
+    echo "$v_bluez" | head -10 | while IFS= read -r line; do echo "    $line"; done
+    echo ""
+
+    echo -e "  ${BOLD}pactl get-default-sink:${NC}"
+    local v_sink
+    v_sink=$(run_as_user "pactl get-default-sink 2>/dev/null" || echo "    (unknown)")
+    echo "    $v_sink"
+    echo ""
+
+    echo -e "  ${BOLD}bluetoothctl show | grep -E 'Class|Name|Discoverable':${NC}"
+    bluetoothctl show 2>/dev/null | grep -E "Class:|Name:|Discoverable:" | while IFS= read -r line; do echo "    $line"; done
+    echo ""
+
+    echo -e "  ${BOLD}pw-link -l | grep soundsync:${NC}"
+    local v_links
+    v_links=$(run_as_user "pw-link -l 2>/dev/null" | grep "soundsync" || echo "    (no soundsync links)")
+    echo "$v_links" | head -10 | while IFS= read -r line; do echo "    $line"; done
+    echo ""
+
+    echo -e "  ${BOLD}pactl list short sources | grep bluez_input:${NC}"
+    local v_bt_src
+    v_bt_src=$(run_as_user "pactl list short sources 2>/dev/null" | grep "bluez_input" || echo "    (none — connect a phone to see BT audio nodes)")
+    echo "$v_bt_src" | while IFS= read -r line; do echo "    $line"; done
+    echo ""
+
+    echo -e "  ${BOLD}pactl list short sinks:${NC}"
+    run_as_user "pactl list short sinks 2>/dev/null" | while IFS= read -r line; do echo "    $line"; done
+    echo ""
+
+    echo -e "  ${BOLD}pactl list short modules | grep soundsync:${NC}"
+    run_as_user "pactl list short modules 2>/dev/null" | grep "soundsync" | while IFS= read -r line; do echo "    $line"; done
+    echo ""
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
