@@ -240,14 +240,13 @@ WPCONF
         mkdir -p "${WP_USER_LUA_DIR}"
         cat > "${WP_USER_LUA_DIR}/51-soundsync-a2dp.lua" << 'WPLUA'
 -- SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
-bluez_monitor.enabled = true
-bluez_monitor.properties = {
-    ["bluez5.roles"] = "[ a2dp_sink ]",
-    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
-    ["bluez5.enable-sbc-xq"] = true,
-    ["bluez5.enable-msbc"] = false,
-    ["bluez5.enable-hw-volume"] = true,
-}
+-- IMPORTANT: Modify individual properties — do NOT replace the entire
+-- bluez_monitor.properties table, as that wipes defaults like with-logind.
+bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink ]"
+bluez_monitor.properties["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]"
+bluez_monitor.properties["bluez5.enable-sbc-xq"] = true
+bluez_monitor.properties["bluez5.enable-msbc"] = false
+bluez_monitor.properties["bluez5.enable-hw-volume"] = true
 WPLUA
         chown -R "${RUN_USER}:${RUN_USER}" "${USER_HOME}/.config/wireplumber" 2>/dev/null || true
         log "WirePlumber 0.4.x user config written to ${WP_USER_LUA_DIR}/51-soundsync-a2dp.lua"
@@ -256,14 +255,13 @@ WPLUA
         mkdir -p "${WP_LUA_DIR}"
         cat > "${WP_LUA_DIR}/51-soundsync.lua" << 'WPLUA'
 -- SoundSync: Enable A2DP sink role (fallback system-wide config)
-bluez_monitor.enabled = true
-bluez_monitor.properties = {
-    ["bluez5.roles"] = "[ a2dp_sink ]",
-    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
-    ["bluez5.enable-sbc-xq"] = true,
-    ["bluez5.enable-msbc"] = false,
-    ["bluez5.enable-hw-volume"] = true,
-}
+-- IMPORTANT: Modify individual properties — do NOT replace the entire
+-- bluez_monitor.properties table, as that wipes defaults like with-logind.
+bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink ]"
+bluez_monitor.properties["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]"
+bluez_monitor.properties["bluez5.enable-sbc-xq"] = true
+bluez_monitor.properties["bluez5.enable-msbc"] = false
+bluez_monitor.properties["bluez5.enable-hw-volume"] = true
 WPLUA
         log "WirePlumber 0.4.x fallback config written to ${WP_LUA_DIR}/51-soundsync.lua"
     fi

@@ -642,14 +642,14 @@ WPCONF
             mkdir -p /etc/wireplumber/bluetooth.lua.d
             cat > /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua << 'WPLUA'
 -- SoundSync: Enable A2DP sink role for Bluetooth audio reception
-bluez_monitor.enabled = true
-bluez_monitor.properties = {
-    ["bluez5.roles"] = "[ a2dp_sink ]",
-    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
-    ["bluez5.enable-sbc-xq"] = true,
-    ["bluez5.enable-msbc"] = false,
-    ["bluez5.enable-hw-volume"] = true,
-}
+-- IMPORTANT: Modify individual properties — do NOT replace the entire
+-- bluez_monitor.properties table, as that wipes defaults like with-logind
+-- which are critical for the BlueZ monitor to activate.
+bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink ]"
+bluez_monitor.properties["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]"
+bluez_monitor.properties["bluez5.enable-sbc-xq"] = true
+bluez_monitor.properties["bluez5.enable-msbc"] = false
+bluez_monitor.properties["bluez5.enable-hw-volume"] = true
 WPLUA
             ok "Wrote WirePlumber 0.4.x Lua A2DP config to /etc/wireplumber/bluetooth.lua.d/"
             ACTIONS+=("Wrote WirePlumber 0.4.x Lua A2DP config")

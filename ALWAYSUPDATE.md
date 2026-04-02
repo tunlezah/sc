@@ -93,6 +93,15 @@ Bluetooth devices cannot stream audio to the machine. See `configure_wireplumber
 - WirePlumber 0.4.x uses Lua files in `/etc/wireplumber/bluetooth.lua.d/`
 - WirePlumber 0.5+ uses conf files in `/etc/wireplumber/wireplumber.conf.d/`
 
+**CRITICAL for WP 0.4.x Lua configs:** You MUST use individual property assignment:
+```lua
+bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink ]"
+```
+Do NOT replace the entire table with `bluez_monitor.properties = { ... }` — this wipes
+defaults from `50-bluez-config.lua` including `["with-logind"] = true`, which prevents
+the BlueZ monitor from activating for the user session. Without logind, no bluez5 devices
+appear in PipeWire and Bluetooth audio silently fails.
+
 ### Service User
 
 The systemd service MUST run as the same user that has PipeWire running.
