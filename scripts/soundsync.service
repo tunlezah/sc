@@ -1,23 +1,21 @@
 [Unit]
 Description=SoundSync Bluetooth Audio Receiver
-After=bluetooth.service pipewire.service pipewire-pulse.service wireplumber.service
+After=bluetooth.service pipewire.service avahi-daemon.service
 Wants=pipewire.service wireplumber.service pipewire-pulse.service
-# Ensure Bluetooth and PipeWire are running
-Requires=bluetooth.service
 
 [Service]
 Type=simple
-User=soundsync
+# IMPORTANT: Must be the PipeWire session user, NOT root or a system user.
+# install.sh sets this to $SUDO_USER automatically.
+User=REPLACE_USER
 Group=audio
 WorkingDirectory=/opt/soundsync
-# Wait for PipeWire to be fully ready before starting.
-# pipewire-pulse may take a moment after boot to accept connections.
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 15); do pactl info >/dev/null 2>&1 && break; echo "Waiting for PipeWire/PulseAudio (attempt $i)..."; sleep 1; done; true'
 # Clean up orphaned SoundSync PulseAudio modules before starting.
-# Prevents duplicate null sinks and loopback modules across restarts.
 ExecStartPre=/bin/bash -c 'pactl list short modules 2>/dev/null | grep -E "module-(null-sink|loopback)" | while read -r id name args; do case "$args" in *soundsync*) pactl unload-module "$id" 2>/dev/null || true ;; esac; done; true'
 ExecStart=/opt/soundsync/soundsync
-Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=XDG_RUNTIME_DIR=/run/user/REPLACE_UID
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/REPLACE_UID/bus
+Environment=PULSE_RUNTIME_PATH=/run/user/REPLACE_UID/pulse
 Environment=RUST_LOG=info
 Restart=on-failure
 RestartSec=5

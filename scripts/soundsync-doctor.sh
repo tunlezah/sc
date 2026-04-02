@@ -1,0 +1,752 @@
+#!/usr/bin/env bash
+# =============================================================================
+# soundsync-doctor.sh — Diagnose and repair SoundSync audio system
+# =============================================================================
+# Usage: sudo bash scripts/soundsync-doctor.sh [--diagnose-only] [--json]
+#
+# --diagnose-only   Run checks without attempting repairs
+# --json            Output machine-readable JSON summary at end
+# =============================================================================
+set -uo pipefail
+# NOTE: We use set -u but NOT set -e — we handle errors per-command.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION A: SETUP & HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+section() { echo -e "\n${CYAN}${BOLD}═══ $1 ═══${NC}"; }
+ok()      { echo -e "  ${GREEN}[OK]${NC} $*";   CHECKS_OK+=("$*"); }
+warn()    { echo -e "  ${YELLOW}[WARN]${NC} $*"; ISSUES+=("$*"); }
+fail()    { echo -e "  ${RED}[FAIL]${NC} $*";    ISSUES+=("$*"); }
+info()    { echo -e "  [INFO] $*"; }
+
+# Parse arguments
+DIAGNOSE_ONLY=false
+JSON_OUTPUT=false
+for arg in "$@"; do
+    case "$arg" in
+        --diagnose-only) DIAGNOSE_ONLY=true ;;
+        --json)          JSON_OUTPUT=true ;;
+    esac
+done
+
+# Tracking arrays
+ISSUES=(); ACTIONS=(); FAILURES=(); CHECKS_OK=()
+
+# State variables for JSON output
+SVC_PIPEWIRE="unknown"; SVC_WIREPLUMBER="unknown"; SVC_BLUETOOTH="unknown"
+SVC_SOUNDSYNC="unknown"; SVC_PIPEWIRE_PULSE="unknown"
+BT_POWERED=false; BT_DISCOVERABLE=false; BT_PAIRABLE=false; BT_CLASS=""
+PIPE_NULL_SINK=false; PIPE_EQ_SINK=false; PIPE_DEFAULT_SINK=""
+BT_SPA_INSTALLED=false; WP_A2DP_CONFIG=false
+
+# ── Detect service user ──────────────────────────────────────────────────────
+detect_service_user() {
+    # 1. Parse from systemd service file
+    if [[ -f /etc/systemd/system/soundsync.service ]]; then
+        local svc_user
+        svc_user=$(grep -oP '^User=\K.*' /etc/systemd/system/soundsync.service 2>/dev/null || true)
+        if [[ -n "$svc_user" ]] && id "$svc_user" &>/dev/null; then
+            echo "$svc_user"
+            return
+        fi
+    fi
+    # 2. Fallback to SUDO_USER
+    if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+        echo "$SUDO_USER"
+        return
+    fi
+    # 3. Fallback to first user running PipeWire
+    local pw_user
+    pw_user=$(ps -eo user,comm 2>/dev/null | awk '$2=="pipewire"{print $1; exit}')
+    if [[ -n "$pw_user" ]] && [[ "$pw_user" != "root" ]]; then
+        echo "$pw_user"
+        return
+    fi
+    # 4. Last resort: first non-root user with UID >= 1000
+    awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' /etc/passwd
+}
+
+RUN_USER=$(detect_service_user)
+RUN_UID=$(id -u "$RUN_USER" 2>/dev/null || echo "1000")
+export XDG_RUNTIME_DIR="/run/user/${RUN_UID}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${RUN_UID}/bus"
+
+# Report directory
+REPORT_DIR="/tmp/soundsync-doctor-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$REPORT_DIR"
+
+# ── Run command as the PipeWire session user ─────────────────────────────────
+run_as_user() {
+    if [[ "$(whoami)" == "$RUN_USER" ]]; then
+        eval "$@"
+    else
+        su - "$RUN_USER" -s /bin/bash -c \
+            "export XDG_RUNTIME_DIR=/run/user/${RUN_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus; $*"
+    fi
+}
+
+# ── Wait helpers ─────────────────────────────────────────────────────────────
+wait_for_user_service() {
+    local svc="$1" max="${2:-10}"
+    for _ in $(seq 1 "$max"); do
+        if run_as_user "systemctl --user is-active '$svc'" &>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_for_system_service() {
+    local svc="$1" max="${2:-10}"
+    for _ in $(seq 1 "$max"); do
+        if systemctl is-active "$svc" &>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_for_pipewire_ready() {
+    local max="${1:-15}"
+    for _ in $(seq 1 "$max"); do
+        if run_as_user "pactl info" &>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# ── Cleanup on exit ──────────────────────────────────────────────────────────
+cleanup() {
+    # Nothing destructive to undo — report dir is intentionally kept
+    :
+}
+trap cleanup EXIT
+
+echo -e "${BOLD}SoundSync Doctor${NC} — $(date -Iseconds)"
+echo "Service user: ${RUN_USER} (UID ${RUN_UID})"
+echo "Report dir:   ${REPORT_DIR}"
+if $DIAGNOSE_ONLY; then echo -e "${YELLOW}Mode: diagnose-only (no repairs)${NC}"; fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION B: SYSTEM INSPECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+section "System Inspection"
+
+# ── B1: Process checks (detect duplicates) ───────────────────────────────────
+check_process() {
+    local name="$1"
+    local count
+    count=$(pgrep -c -x "$name" 2>/dev/null || echo "0")
+    if [[ "$count" -eq 0 ]]; then
+        fail "$name: not running"
+    elif [[ "$count" -eq 1 ]]; then
+        ok "$name: running (PID $(pgrep -x "$name" | head -1))"
+    else
+        fail "$name: $count instances running (expected 1)"
+    fi
+    echo "$count"
+}
+
+PW_COUNT=$(check_process "pipewire")
+WP_COUNT=$(check_process "wireplumber")
+check_process "bluetoothd" > /dev/null
+
+# SoundSync may match multiple patterns — use -f
+SS_COUNT=$(pgrep -c -f "/opt/soundsync/soundsync" 2>/dev/null || echo "0")
+if [[ "$SS_COUNT" -eq 0 ]]; then
+    fail "soundsync: not running"
+elif [[ "$SS_COUNT" -eq 1 ]]; then
+    ok "soundsync: running (PID $(pgrep -f '/opt/soundsync/soundsync' | head -1))"
+else
+    fail "soundsync: $SS_COUNT instances running (expected 1)"
+fi
+
+# ── B2: systemd service status ───────────────────────────────────────────────
+for svc in pipewire wireplumber pipewire-pulse; do
+    if run_as_user "systemctl --user is-active '$svc'" &>/dev/null; then
+        ok "systemd --user $svc: active"
+        eval "SVC_$(echo "$svc" | tr '-' '_' | tr '[:lower:]' '[:upper:]')=active"
+    else
+        fail "systemd --user $svc: inactive"
+        eval "SVC_$(echo "$svc" | tr '-' '_' | tr '[:lower:]' '[:upper:]')=inactive"
+    fi
+done
+
+if systemctl is-active bluetooth &>/dev/null; then
+    ok "systemd bluetooth: active"; SVC_BLUETOOTH="active"
+else
+    fail "systemd bluetooth: inactive"; SVC_BLUETOOTH="inactive"
+fi
+
+if systemctl is-active soundsync &>/dev/null; then
+    ok "systemd soundsync: active"; SVC_SOUNDSYNC="active"
+else
+    warn "systemd soundsync: inactive"; SVC_SOUNDSYNC="inactive"
+fi
+
+# ── B3: XDG_RUNTIME_DIR ─────────────────────────────────────────────────────
+if [[ -d "/run/user/${RUN_UID}" ]]; then
+    local_owner=$(stat -c '%U' "/run/user/${RUN_UID}" 2>/dev/null || echo "unknown")
+    if [[ "$local_owner" == "$RUN_USER" ]]; then
+        ok "XDG_RUNTIME_DIR exists, owned by $RUN_USER"
+    else
+        fail "XDG_RUNTIME_DIR owned by $local_owner (expected $RUN_USER)"
+    fi
+else
+    fail "XDG_RUNTIME_DIR /run/user/${RUN_UID} does not exist"
+fi
+
+# ── B4: DBus session socket ──────────────────────────────────────────────────
+if [[ -S "/run/user/${RUN_UID}/bus" ]]; then
+    ok "DBus session socket exists"
+else
+    fail "DBus session socket /run/user/${RUN_UID}/bus missing"
+fi
+
+# ── B5: loginctl linger ─────────────────────────────────────────────────────
+if loginctl show-user "$RUN_USER" 2>/dev/null | grep -q "Linger=yes"; then
+    ok "loginctl linger enabled for $RUN_USER"
+else
+    warn "loginctl linger NOT enabled for $RUN_USER"
+fi
+
+# ── B6: Versions ─────────────────────────────────────────────────────────────
+PW_VER=$(run_as_user "pw-cli --version 2>/dev/null | head -1" || echo "unknown")
+WP_VER=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "unknown")
+info "PipeWire: $PW_VER"
+info "WirePlumber: $WP_VER"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION C: BLUETOOTH VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════════
+section "Bluetooth Validation"
+
+# ── C1: Adapter ──────────────────────────────────────────────────────────────
+BT_INFO=$(bluetoothctl show 2>/dev/null || echo "")
+echo "$BT_INFO" > "$REPORT_DIR/bluetoothctl-show.txt"
+
+if [[ -z "$BT_INFO" ]]; then
+    fail "No Bluetooth adapter found"
+else
+    # Parse adapter properties
+    BT_POWERED=$(echo "$BT_INFO" | grep -oP 'Powered: \K\w+' || echo "no")
+    BT_DISCOVERABLE=$(echo "$BT_INFO" | grep -oP 'Discoverable: \K\w+' || echo "no")
+    BT_PAIRABLE=$(echo "$BT_INFO" | grep -oP 'Pairable: \K\w+' || echo "no")
+    BT_CLASS=$(echo "$BT_INFO" | grep -oP 'Class: \K\S+' || echo "")
+
+    [[ "$BT_POWERED" == "yes" ]]       && ok "Adapter powered"          || fail "Adapter NOT powered"
+    [[ "$BT_DISCOVERABLE" == "yes" ]]   && ok "Adapter discoverable"    || fail "Adapter NOT discoverable"
+    [[ "$BT_PAIRABLE" == "yes" ]]       && ok "Adapter pairable"        || fail "Adapter NOT pairable"
+
+    # C3: Class of Device check (0x240414 = Audio speaker)
+    if [[ -n "$BT_CLASS" ]]; then
+        info "Bluetooth Class: $BT_CLASS"
+        if echo "$BT_CLASS" | grep -qi "0x240414"; then
+            ok "Class of Device is Audio/Speaker (0x240414)"
+        else
+            warn "Class of Device is $BT_CLASS (expected 0x240414 for speaker)"
+        fi
+    else
+        warn "Could not determine Bluetooth Class of Device"
+    fi
+fi
+
+# ── C4: /etc/bluetooth/main.conf ─────────────────────────────────────────────
+if [[ -f /etc/bluetooth/main.conf ]]; then
+    if grep -q "Class.*=.*0x240414" /etc/bluetooth/main.conf 2>/dev/null; then
+        ok "main.conf has speaker Class"
+    else
+        warn "main.conf missing Class = 0x240414"
+    fi
+    if grep -q "DiscoverableTimeout.*=.*0" /etc/bluetooth/main.conf 2>/dev/null; then
+        ok "main.conf: DiscoverableTimeout = 0 (always discoverable)"
+    else
+        warn "main.conf: DiscoverableTimeout not set to 0"
+    fi
+else
+    fail "/etc/bluetooth/main.conf does not exist"
+fi
+
+# ── C5: libspa-0.2-bluetooth ─────────────────────────────────────────────────
+if find /usr/lib -path "*/spa-0.2/bluez5" -type d 2>/dev/null | grep -q .; then
+    ok "libspa-0.2-bluetooth SPA plugin installed"
+    BT_SPA_INSTALLED=true
+else
+    fail "libspa-0.2-bluetooth NOT installed — Bluetooth audio cannot work"
+    BT_SPA_INSTALLED=false
+fi
+
+# ── C6: WirePlumber A2DP config ──────────────────────────────────────────────
+WP_A2DP_CONFIG=false
+WP_A2DP_CONFIG_PATH=""
+
+# Check WirePlumber 0.5+ conf.d
+for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*; do
+    if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
+        ok "WirePlumber A2DP config found: $f"
+        WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
+        break
+    fi
+done
+
+# Check WirePlumber 0.4.x lua dirs
+if ! $WP_A2DP_CONFIG; then
+    for dir in /etc/wireplumber/bluetooth.lua.d \
+               "$(eval echo "~${RUN_USER}")/.config/wireplumber/bluetooth.lua.d"; do
+        for f in "$dir"/51-soundsync*; do
+            if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
+                ok "WirePlumber A2DP config found: $f"
+                WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
+                break 2
+            fi
+        done
+    done
+fi
+
+if ! $WP_A2DP_CONFIG; then
+    fail "WirePlumber A2DP sink config NOT found — phone cannot see SoundSync as speaker"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION D: AUDIO PIPELINE VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════════
+section "Audio Pipeline"
+
+# Save full state for debugging
+run_as_user "pw-cli list-objects" > "$REPORT_DIR/pw-objects.txt" 2>/dev/null || true
+run_as_user "pw-dump" > "$REPORT_DIR/pw-dump.json" 2>/dev/null || true
+run_as_user "pactl list short sinks" > "$REPORT_DIR/pa-sinks.txt" 2>/dev/null || true
+run_as_user "pactl list short sources" > "$REPORT_DIR/pa-sources.txt" 2>/dev/null || true
+run_as_user "pactl list short modules" > "$REPORT_DIR/pa-modules.txt" 2>/dev/null || true
+run_as_user "pw-link -l" > "$REPORT_DIR/pw-links.txt" 2>/dev/null || true
+
+# ── D1: Null sink ────────────────────────────────────────────────────────────
+if grep -q "soundsync-capture" "$REPORT_DIR/pa-sinks.txt" 2>/dev/null; then
+    ok "soundsync-capture null sink exists"
+    PIPE_NULL_SINK=true
+else
+    info "soundsync-capture null sink not present (created when SoundSync starts)"
+    PIPE_NULL_SINK=false
+fi
+
+# ── D2: EQ filter-chain ─────────────────────────────────────────────────────
+if grep -q "effect_input.soundsync-eq" "$REPORT_DIR/pa-sinks.txt" 2>/dev/null; then
+    ok "EQ filter-chain sink exists"
+    PIPE_EQ_SINK=true
+else
+    info "EQ filter-chain not active (starts when EQ is enabled)"
+    PIPE_EQ_SINK=false
+fi
+
+# ── D3: Default sink ────────────────────────────────────────────────────────
+PIPE_DEFAULT_SINK=$(run_as_user "pactl get-default-sink" 2>/dev/null || echo "unknown")
+info "Default sink: $PIPE_DEFAULT_SINK"
+if echo "$PIPE_DEFAULT_SINK" | grep -q "soundsync\|effect_input"; then
+    ok "Default sink routed to SoundSync"
+elif [[ "$SVC_SOUNDSYNC" == "inactive" ]]; then
+    info "SoundSync not running — default sink not expected to be set"
+else
+    warn "Default sink ($PIPE_DEFAULT_SINK) not routed to SoundSync"
+fi
+
+# ── D4: Duplicate modules ───────────────────────────────────────────────────
+DUPE_COUNT=$(grep -c "soundsync" "$REPORT_DIR/pa-modules.txt" 2>/dev/null || echo "0")
+if [[ "$DUPE_COUNT" -gt 2 ]]; then
+    fail "Found $DUPE_COUNT SoundSync modules (expected <=2) — duplicates exist"
+elif [[ "$DUPE_COUNT" -gt 0 ]]; then
+    ok "SoundSync modules: $DUPE_COUNT (within normal range)"
+fi
+
+# ── D5: Bluetooth audio nodes ───────────────────────────────────────────────
+BT_NODE_COUNT=$(grep -c "bluez_input\|bluez_source" "$REPORT_DIR/pw-objects.txt" 2>/dev/null || echo "0")
+if [[ "$BT_NODE_COUNT" -gt 0 ]]; then
+    ok "Bluetooth audio nodes in PipeWire: $BT_NODE_COUNT"
+else
+    info "No Bluetooth audio nodes (no device currently streaming)"
+fi
+
+# ── D6: PipeWire links ──────────────────────────────────────────────────────
+LINK_COUNT=$(wc -l < "$REPORT_DIR/pw-links.txt" 2>/dev/null || echo "0")
+info "PipeWire links: ~$LINK_COUNT entries"
+
+# ── D7: Capture process ─────────────────────────────────────────────────────
+if pgrep -f "parec.*soundsync\|pw-cat.*soundsync" &>/dev/null; then
+    ok "Audio capture process running"
+elif [[ "$SVC_SOUNDSYNC" == "active" ]]; then
+    warn "SoundSync is active but no capture process found"
+else
+    info "No capture process (SoundSync not running)"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION E: SELF-HEALING REPAIR
+# ═══════════════════════════════════════════════════════════════════════════════
+repair_system() {
+    section "Self-Healing Repair"
+
+    # ── E1: Stop services safely ─────────────────────────────────────────────
+    info "Step 1: Stopping services..."
+    if systemctl is-active soundsync &>/dev/null; then
+        systemctl stop soundsync 2>/dev/null || true
+        ACTIONS+=("Stopped soundsync service")
+    fi
+    run_as_user "systemctl --user stop wireplumber" 2>/dev/null || true
+    run_as_user "systemctl --user stop pipewire-pulse" 2>/dev/null || true
+    run_as_user "systemctl --user stop pipewire" 2>/dev/null || true
+    sleep 1
+
+    # ── E2: Kill orphaned processes ──────────────────────────────────────────
+    info "Step 2: Cleaning orphaned processes..."
+    for pattern in "pipewire-filter-chain" "pw-loopback" "parec.*soundsync" "pw-cat.*soundsync"; do
+        if pgrep -u "$RUN_UID" -f "$pattern" &>/dev/null; then
+            pkill -u "$RUN_UID" -f "$pattern" 2>/dev/null || true
+            ACTIONS+=("Killed orphaned: $pattern")
+        fi
+    done
+
+    # Kill duplicate pipewire/wireplumber instances
+    for proc in pipewire wireplumber; do
+        local count
+        count=$(pgrep -u "$RUN_UID" -c -x "$proc" 2>/dev/null || echo "0")
+        if [[ "$count" -gt 1 ]]; then
+            # Kill all — they'll be restarted cleanly
+            pkill -u "$RUN_UID" -x "$proc" 2>/dev/null || true
+            ACTIONS+=("Killed $count duplicate $proc instances")
+        fi
+    done
+    sleep 1
+
+    # ── E3: Clean PipeWire runtime state ─────────────────────────────────────
+    info "Step 3: Cleaning stale runtime files..."
+    if ! pgrep -u "$RUN_UID" -x pipewire &>/dev/null; then
+        # Only clean lock files when PipeWire is stopped
+        for f in /run/user/${RUN_UID}/pipewire-0.lock; do
+            if [[ -f "$f" ]]; then
+                rm -f "$f"
+                ACTIONS+=("Removed stale lock: $f")
+            fi
+        done
+    fi
+
+    # ── E4: Fix environment ──────────────────────────────────────────────────
+    info "Step 4: Fixing environment..."
+    if [[ ! -d "/run/user/${RUN_UID}" ]]; then
+        mkdir -p "/run/user/${RUN_UID}"
+        chown "${RUN_USER}:${RUN_USER}" "/run/user/${RUN_UID}"
+        chmod 700 "/run/user/${RUN_UID}"
+        ACTIONS+=("Created XDG_RUNTIME_DIR")
+    fi
+
+    if ! loginctl show-user "$RUN_USER" 2>/dev/null | grep -q "Linger=yes"; then
+        loginctl enable-linger "$RUN_USER" 2>/dev/null || true
+        ACTIONS+=("Enabled loginctl linger for $RUN_USER")
+    fi
+
+    run_as_user "systemctl --user daemon-reload" 2>/dev/null || true
+    run_as_user "systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service" 2>/dev/null || true
+
+    # ── E5: Fix Bluetooth config ─────────────────────────────────────────────
+    info "Step 5: Checking Bluetooth config..."
+    local bt_needs_fix=false
+    if [[ ! -f /etc/bluetooth/main.conf ]] || \
+       ! grep -q "Class.*=.*0x240414" /etc/bluetooth/main.conf 2>/dev/null || \
+       ! grep -q "DiscoverableTimeout.*=.*0" /etc/bluetooth/main.conf 2>/dev/null; then
+        bt_needs_fix=true
+    fi
+
+    if $bt_needs_fix; then
+        info "Writing corrected /etc/bluetooth/main.conf..."
+        if [[ -f /etc/bluetooth/main.conf ]]; then
+            cp /etc/bluetooth/main.conf "/etc/bluetooth/main.conf.bak.$(date +%s)" 2>/dev/null || true
+        fi
+        cat > /etc/bluetooth/main.conf << 'BTCONF'
+[General]
+Class = 0x240414
+Name = SoundSync
+DiscoverableTimeout = 0
+PairableTimeout = 0
+Discoverable = true
+Pairable = true
+
+[Policy]
+AutoEnable = true
+BTCONF
+        ACTIONS+=("Wrote /etc/bluetooth/main.conf with speaker Class")
+    fi
+
+    # ── E6: Fix WirePlumber A2DP config ──────────────────────────────────────
+    info "Step 6: Checking WirePlumber A2DP config..."
+    if ! $WP_A2DP_CONFIG; then
+        local wp_ver
+        wp_ver=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "0.4")
+
+        if dpkg --compare-versions "$wp_ver" ge "0.5" 2>/dev/null; then
+            mkdir -p /etc/wireplumber/wireplumber.conf.d
+            cat > /etc/wireplumber/wireplumber.conf.d/51-soundsync.conf << 'WPCONF'
+# SoundSync: Enable A2DP sink role
+monitor.bluez.properties = {
+    bluez5.roles = [ a2dp_sink ]
+    bluez5.codecs = [ sbc aac ldac aptx aptx_hd ]
+    bluez5.enable-sbc-xq = true
+    bluez5.enable-msbc = false
+    bluez5.enable-hw-volume = true
+    bluez5.a2dp.opus.pro.channels = 0
+}
+WPCONF
+            ACTIONS+=("Wrote WirePlumber 0.5+ A2DP config")
+        else
+            mkdir -p /etc/wireplumber/bluetooth.lua.d
+            cat > /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua << 'WPLUA'
+-- SoundSync: Enable A2DP sink role
+bluez_monitor.enabled = true
+bluez_monitor.properties = {
+    ["bluez5.roles"] = "[ a2dp_sink ]",
+    ["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]",
+    ["bluez5.enable-sbc-xq"] = true,
+    ["bluez5.enable-msbc"] = false,
+    ["bluez5.enable-hw-volume"] = true,
+}
+WPLUA
+            ACTIONS+=("Wrote WirePlumber 0.4.x A2DP config")
+        fi
+        WP_A2DP_CONFIG=true
+    fi
+
+    # ── E7: Restart services in order with verification ──────────────────────
+    info "Step 7: Restarting services..."
+
+    # PipeWire
+    run_as_user "systemctl --user start pipewire.service" 2>/dev/null || true
+    if wait_for_user_service "pipewire" 10; then
+        ok "pipewire started"; ACTIONS+=("Started pipewire")
+    else
+        fail "pipewire failed to start"; FAILURES+=("pipewire failed to start")
+    fi
+
+    # PipeWire-Pulse
+    run_as_user "systemctl --user start pipewire-pulse.service" 2>/dev/null || true
+    if wait_for_user_service "pipewire-pulse" 10; then
+        ok "pipewire-pulse started"; ACTIONS+=("Started pipewire-pulse")
+    else
+        fail "pipewire-pulse failed to start"; FAILURES+=("pipewire-pulse failed to start")
+    fi
+
+    # WirePlumber
+    run_as_user "systemctl --user start wireplumber.service" 2>/dev/null || true
+    if wait_for_user_service "wireplumber" 10; then
+        ok "wireplumber started"; ACTIONS+=("Started wireplumber")
+    else
+        fail "wireplumber failed to start"; FAILURES+=("wireplumber failed to start")
+    fi
+
+    # Verify PipeWire accepts commands
+    if wait_for_pipewire_ready 15; then
+        ok "PipeWire ready (pactl responding)"
+    else
+        fail "PipeWire not responding to pactl after restart"
+        FAILURES+=("PipeWire not responding to pactl")
+    fi
+
+    # Bluetooth
+    systemctl restart bluetooth 2>/dev/null || true
+    sleep 2
+    if wait_for_system_service "bluetooth" 10; then
+        ok "bluetooth restarted"; ACTIONS+=("Restarted bluetooth")
+    else
+        fail "bluetooth failed to restart"; FAILURES+=("bluetooth failed to restart")
+    fi
+
+    # Verify Bluetooth adapter
+    sleep 1
+    local bt_check
+    bt_check=$(bluetoothctl show 2>/dev/null || echo "")
+    if echo "$bt_check" | grep -q "Powered: yes"; then
+        ok "Bluetooth adapter powered after restart"
+    else
+        warn "Bluetooth adapter not powered — attempting to power on..."
+        bluetoothctl power on &>/dev/null || true
+        sleep 1
+    fi
+    if echo "$bt_check" | grep -q "Discoverable: yes"; then
+        ok "Bluetooth adapter discoverable"
+    else
+        bluetoothctl discoverable on &>/dev/null || true
+        ACTIONS+=("Set Bluetooth discoverable")
+    fi
+
+    # SoundSync
+    if [[ -f /etc/systemd/system/soundsync.service ]]; then
+        systemctl start soundsync 2>/dev/null || true
+        if wait_for_system_service "soundsync" 15; then
+            ok "soundsync started"; ACTIONS+=("Started soundsync")
+        else
+            fail "soundsync failed to start"; FAILURES+=("soundsync failed to start")
+        fi
+    else
+        warn "soundsync.service not installed — skipping"
+    fi
+
+    # ── E8: Clean duplicate modules ──────────────────────────────────────────
+    info "Step 8: Checking for duplicate modules..."
+    sleep 2  # Give SoundSync time to create its modules
+    local mod_count
+    mod_count=$(run_as_user "pactl list short modules 2>/dev/null | grep -c 'soundsync'" || echo "0")
+    if [[ "$mod_count" -gt 2 ]]; then
+        warn "Found $mod_count SoundSync modules — cleaning duplicates"
+        run_as_user "pactl list short modules" 2>/dev/null | \
+            grep -E "module-(null-sink|loopback)" | \
+            while read -r id name args; do
+                case "$args" in
+                    *soundsync*)
+                        run_as_user "pactl unload-module $id" 2>/dev/null || true
+                        ACTIONS+=("Unloaded duplicate module $id")
+                        ;;
+                esac
+            done
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION F: RUN REPAIRS (unless --diagnose-only)
+# ═══════════════════════════════════════════════════════════════════════════════
+if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
+    repair_system
+elif $DIAGNOSE_ONLY; then
+    info "Skipping repairs (--diagnose-only)"
+elif [[ ${#ISSUES[@]} -eq 0 ]]; then
+    info "No issues detected — skipping repairs"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION G: FAILURE DUMP (if issues remain after repair)
+# ═══════════════════════════════════════════════════════════════════════════════
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+    section "Failure Diagnostics Dump"
+    info "Collecting detailed diagnostics for ${#FAILURES[@]} remaining failures..."
+
+    run_as_user "pw-dump" > "$REPORT_DIR/post-repair-pw-dump.json" 2>/dev/null || true
+    run_as_user "pactl list" > "$REPORT_DIR/post-repair-pactl-list.txt" 2>/dev/null || true
+    run_as_user "pw-cli list-objects" > "$REPORT_DIR/post-repair-pw-objects.txt" 2>/dev/null || true
+    bluetoothctl show > "$REPORT_DIR/post-repair-bt-show.txt" 2>/dev/null || true
+    run_as_user "systemctl --user status pipewire wireplumber pipewire-pulse" > "$REPORT_DIR/post-repair-user-services.txt" 2>&1 || true
+    systemctl status bluetooth soundsync > "$REPORT_DIR/post-repair-system-services.txt" 2>&1 || true
+    journalctl -u soundsync --no-pager -n 100 > "$REPORT_DIR/soundsync-journal.txt" 2>/dev/null || true
+    journalctl --user -u pipewire --no-pager -n 50 > "$REPORT_DIR/pipewire-journal.txt" 2>/dev/null || true
+    journalctl --user -u wireplumber --no-pager -n 50 > "$REPORT_DIR/wireplumber-journal.txt" 2>/dev/null || true
+
+    echo ""
+    echo -e "${RED}${BOLD}Remaining failures:${NC}"
+    for f in "${FAILURES[@]}"; do
+        echo -e "  ${RED}*${NC} $f"
+    done
+    echo ""
+    echo "Full diagnostics saved to: $REPORT_DIR/"
+    echo "Share with: tar czf soundsync-doctor.tar.gz -C /tmp $(basename "$REPORT_DIR")"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION H: SUMMARY
+# ═══════════════════════════════════════════════════════════════════════════════
+echo ""
+echo -e "${CYAN}${BOLD}═══════════════════════════════════════${NC}"
+echo -e "${CYAN}${BOLD}  SoundSync Doctor — Summary${NC}"
+echo -e "${CYAN}${BOLD}═══════════════════════════════════════${NC}"
+echo -e "  Issues Found:    ${#ISSUES[@]}"
+echo -e "  Actions Taken:   ${#ACTIONS[@]}"
+echo -e "  Remaining:       ${#FAILURES[@]}"
+echo ""
+
+# Re-check key systems for final status
+final_status() {
+    local name="$1" check="$2"
+    if eval "$check" &>/dev/null; then
+        echo -e "  ${GREEN}[OK]${NC}   $name"
+    else
+        echo -e "  ${RED}[FAIL]${NC} $name"
+    fi
+}
+
+final_status "PipeWire running"          "run_as_user 'systemctl --user is-active pipewire'"
+final_status "WirePlumber running"       "run_as_user 'systemctl --user is-active wireplumber'"
+final_status "PipeWire-Pulse running"    "run_as_user 'systemctl --user is-active pipewire-pulse'"
+final_status "Bluetooth active"          "systemctl is-active bluetooth"
+final_status "SoundSync active"          "systemctl is-active soundsync"
+final_status "BT adapter discoverable"   "bluetoothctl show 2>/dev/null | grep -q 'Discoverable: yes'"
+final_status "libspa-0.2-bluetooth"      "find /usr/lib -path '*/spa-0.2/bluez5' -type d 2>/dev/null | grep -q ."
+final_status "WP A2DP sink config"       "test -n '$(find /etc/wireplumber -name '51-soundsync*' 2>/dev/null | head -1)' || test -n '$(find $(eval echo ~${RUN_USER})/.config/wireplumber -name '51-soundsync*' 2>/dev/null | head -1)'"
+final_status "XDG_RUNTIME_DIR exists"    "test -d /run/user/${RUN_UID}"
+final_status "DBus session socket"       "test -S /run/user/${RUN_UID}/bus"
+
+echo -e "${CYAN}${BOLD}═══════════════════════════════════════${NC}"
+echo ""
+echo "Report saved to: $REPORT_DIR/"
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JSON OUTPUT (if --json)
+# ═══════════════════════════════════════════════════════════════════════════════
+if $JSON_OUTPUT; then
+    # Build JSON arrays
+    json_array() {
+        local arr=("$@")
+        echo -n "["
+        local first=true
+        for item in "${arr[@]}"; do
+            $first || echo -n ","
+            first=false
+            # Escape quotes in item
+            item="${item//\\/\\\\}"
+            item="${item//\"/\\\"}"
+            echo -n "\"$item\""
+        done
+        echo -n "]"
+    }
+
+    JSON_FILE="$REPORT_DIR/summary.json"
+    cat > "$JSON_FILE" << JSONEOF
+{
+  "timestamp": "$(date -Iseconds)",
+  "user": "$RUN_USER",
+  "uid": $RUN_UID,
+  "issues_found": $(json_array "${ISSUES[@]+"${ISSUES[@]}"}"),
+  "actions_taken": $(json_array "${ACTIONS[@]+"${ACTIONS[@]}"}"),
+  "failures_remaining": $(json_array "${FAILURES[@]+"${FAILURES[@]}"}"),
+  "services": {
+    "pipewire": "$(run_as_user 'systemctl --user is-active pipewire' 2>/dev/null || echo 'inactive')",
+    "wireplumber": "$(run_as_user 'systemctl --user is-active wireplumber' 2>/dev/null || echo 'inactive')",
+    "pipewire_pulse": "$(run_as_user 'systemctl --user is-active pipewire-pulse' 2>/dev/null || echo 'inactive')",
+    "bluetooth": "$(systemctl is-active bluetooth 2>/dev/null || echo 'inactive')",
+    "soundsync": "$(systemctl is-active soundsync 2>/dev/null || echo 'inactive')"
+  },
+  "bluetooth": {
+    "powered": $(bluetoothctl show 2>/dev/null | grep -q "Powered: yes" && echo true || echo false),
+    "discoverable": $(bluetoothctl show 2>/dev/null | grep -q "Discoverable: yes" && echo true || echo false),
+    "pairable": $(bluetoothctl show 2>/dev/null | grep -q "Pairable: yes" && echo true || echo false),
+    "class": "$(bluetoothctl show 2>/dev/null | grep -oP 'Class: \K\S+' || echo '')",
+    "spa_plugin_installed": $BT_SPA_INSTALLED,
+    "a2dp_config_present": $WP_A2DP_CONFIG
+  },
+  "pipeline": {
+    "null_sink": $PIPE_NULL_SINK,
+    "eq_sink": $PIPE_EQ_SINK,
+    "default_sink": "$PIPE_DEFAULT_SINK"
+  },
+  "report_dir": "$REPORT_DIR"
+}
+JSONEOF
+    echo "JSON summary: $JSON_FILE"
+fi
+
+# Exit code: 0 if no failures remain, 1 if issues persist
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+    exit 1
+fi
+exit 0

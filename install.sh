@@ -25,6 +25,24 @@ log()    { echo -e "${GREEN}[SoundSync]${NC} $*"; }
 warn()   { echo -e "${YELLOW}[WARNING]${NC} $*"; }
 error()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# Wait for a systemd service to become active. Returns 0 on success, 1 on timeout.
+wait_for_active() {
+    local svc="$1" max="${2:-15}" is_user="${3:-false}"
+    for i in $(seq 1 "$max"); do
+        if [[ "$is_user" == "true" ]]; then
+            if su - "${RUN_USER}" -s /bin/bash -c "systemctl --user is-active '$svc'" &>/dev/null; then
+                return 0
+            fi
+        else
+            if systemctl is-active "$svc" &>/dev/null; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 # -------------------------------------------------------------------
 # Uninstall
 # -------------------------------------------------------------------
@@ -160,6 +178,11 @@ BTCONF
 
     log "Bluetooth configured. Restarting service..."
     systemctl restart bluetooth || warn "Failed to restart bluetooth service"
+    if wait_for_active bluetooth 10; then
+        log "Bluetooth service verified active"
+    else
+        warn "Bluetooth service not active after restart — will retry after full setup"
+    fi
 }
 
 # -------------------------------------------------------------------
@@ -234,9 +257,35 @@ WPLUA
     fi
 
     # Restart WirePlumber to pick up the new config
-    systemctl --user restart wireplumber 2>/dev/null || \
-        su - "${RUN_USER}" -s /bin/bash -c "systemctl --user restart wireplumber" 2>/dev/null || \
-        warn "Could not restart WirePlumber — reboot may be needed"
+    local RUN_USER="${SUDO_USER:-$(whoami)}"
+    local RUN_UID
+    RUN_UID=$(id -u "${RUN_USER}" 2>/dev/null || echo "1000")
+
+    log "Restarting WirePlumber to apply A2DP config..."
+    su - "${RUN_USER}" -s /bin/bash -c "
+        export XDG_RUNTIME_DIR=/run/user/${RUN_UID}
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus
+        systemctl --user restart wireplumber 2>/dev/null
+    " || warn "Could not restart WirePlumber via systemctl"
+
+    # Verify WirePlumber actually restarted
+    if wait_for_active wireplumber 10 true; then
+        log "WirePlumber verified active after config change"
+    else
+        warn "WirePlumber not active — attempting recovery..."
+        # Ensure runtime dir exists
+        mkdir -p "/run/user/${RUN_UID}"
+        chown "${RUN_USER}:${RUN_USER}" "/run/user/${RUN_UID}" 2>/dev/null || true
+        # Try again with full environment
+        su - "${RUN_USER}" -s /bin/bash -c "
+            export XDG_RUNTIME_DIR=/run/user/${RUN_UID}
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${RUN_UID}/bus
+            systemctl --user daemon-reload
+            systemctl --user restart pipewire.service
+            sleep 2
+            systemctl --user restart wireplumber.service
+        " 2>/dev/null || warn "WirePlumber recovery failed — run soundsync-doctor.sh after install"
+    fi
 }
 
 # -------------------------------------------------------------------
@@ -473,9 +522,32 @@ setup_xdg() {
     # Ensure PipeWire and WirePlumber are enabled as user services
     # (they must be running for SoundSync to create sinks, capture audio, etc.)
     su - "${RUN_USER}" -s /bin/bash -c "
+        export XDG_RUNTIME_DIR=/run/user/${uid}
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus
+        systemctl --user daemon-reload
         systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
         systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null
     " || warn "Could not enable PipeWire user services — they may already be enabled"
+
+    # Verify PipeWire is ready to accept commands
+    local pw_ready=false
+    for i in $(seq 1 15); do
+        if su - "${RUN_USER}" -s /bin/bash -c "
+            export XDG_RUNTIME_DIR=/run/user/${uid}
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus
+            pactl info >/dev/null 2>&1
+        "; then
+            pw_ready=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ "$pw_ready" == "true" ]]; then
+        log "PipeWire verified ready (accepts pactl commands)"
+    else
+        warn "PipeWire not responding to pactl — SoundSync may need soundsync-doctor.sh"
+    fi
 }
 
 # -------------------------------------------------------------------
@@ -517,7 +589,13 @@ main() {
     # Restart service if it was running before upgrade
     if [[ "${SERVICE_WAS_RUNNING:-false}" == "true" ]]; then
         log "Restarting SoundSync service..."
-        systemctl start soundsync || warn "Failed to restart SoundSync service"
+        systemctl start soundsync || warn "Failed to start SoundSync service"
+        if wait_for_active soundsync 15; then
+            log "SoundSync service verified active"
+        else
+            warn "SoundSync service not active — check: systemctl status soundsync"
+            warn "Try running: sudo bash scripts/soundsync-doctor.sh"
+        fi
     fi
 
     log ""
@@ -533,6 +611,9 @@ main() {
     log ""
     log "Uninstall:"
     log "  sudo bash install.sh --uninstall"
+    log ""
+    log "Diagnose issues:"
+    log "  sudo bash scripts/soundsync-doctor.sh"
     log ""
     log "Web UI available at:"
     log "  http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):8080"

@@ -1,39 +1,40 @@
-# SoundSync UI Redesign & Bug Fix Task Tracker
+# SoundSync Stability Improvements — Implementation Plan
 
-## Completed
+## Problem Statement
 
-- [x] UI Redesign: 65/35 two-column dashboard layout
-- [x] Logo integration (header + favicon)
-- [x] DeviceList search/filter bar
-- [x] AudioOutput Line-In tab
-- [x] MediaControls progress bar with timestamps
-- [x] Bug Fix 1: Stale metadata — AVRCP D-Bus reconnection
-- [x] Bug Fix 2: Stale play/pause — AVRCP D-Bus connection recovery
-- [x] Bug Fix 3: Post-reboot audio — PipeWire readiness probing + systemd deps
-- [x] Updated systemd service with proper dependency ordering
+SoundSync has several instability issues:
+1. Bluetooth connects but phone doesn't see SoundSync as a speaker (A2DP sink role not applied)
+2. PipeWire/WirePlumber fail to restart properly
+3. System sometimes requires reboot after install/restart
+4. Duplicate/orphaned audio nodes accumulate across restarts
+5. No self-healing diagnostic tool exists
 
-## Review
+## Root Cause Analysis
 
-### Changes Made
-1. **UI Layout** — Grid changed from 50/50 to 65/35 split, gap/padding tweaked
-2. **Logo** — SoundSyncLogo.png replaces StreamCastImage.png in header and favicon
-3. **DeviceList** — Added search/filter input to filter by name or MAC address
-4. **AudioOutput** — Added Line-In tab alongside Chromecast/AirPlay
-5. **MediaControls** — Added progress bar, elapsed/total timestamps, track source label
-6. **AVRCP Monitor** — Added consecutive failure tracking + automatic D-Bus reconnect
-7. **Audio Pipeline** — Added `wait_for_audio_services()` pre-check with 30s timeout
-8. **Null Sink Creation** — Increased retries from 5 to 10 with exponential backoff
-9. **systemd Service** — Added `After=pipewire-pulse.service wireplumber.service`, PipeWire readiness pre-check
+### Issue 1: Phone doesn't see SoundSync as speaker
+- WirePlumber config may be written but not loaded (restart fails silently)
+- BlueZ Class of Device must be 0x240414 (Audio/Video + Rendering + Loudspeaker)
+- libspa-0.2-bluetooth may be missing
+- Bluetooth adapter may not be in discoverable mode
 
-### Root Cause Analysis
+### Issue 2: PipeWire/WirePlumber restart failures
+- User services require proper XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS
+- systemctl --user from root context fails without su - or machinectl shell
+- Service file in scripts/soundsync.service uses hardcoded User=soundsync
 
-**Bug 1 (Stale Metadata) + Bug 2 (Stale Play/Pause):**
-Same root cause — the AVRCP monitor creates a single D-Bus connection at startup and never reconnects. After prolonged runtime (adapter resets, D-Bus service restarts), the connection goes stale. All polls and commands silently fail. Fix: track consecutive failures and reconnect after 5 consecutive D-Bus errors.
+### Issue 3: Reboot required
+- install.sh restarts WirePlumber but doesn't verify it actually came back
+- PipeWire user services may not be enabled for linger
+- Runtime dir may not exist after install
 
-**Bug 3 (Audio Broken After Reboot):**
-The systemd service uses `After=pipewire.service` but PipeWire/WirePlumber may not be fully ready to accept `pactl` commands when the unit starts. The null sink creation would retry 5 times with 1s delays — insufficient on slow systems. Fix: (1) explicit readiness probe loop before pipeline init, (2) doubled retries with exponential backoff, (3) systemd ExecStartPre readiness check, (4) proper After= for all PipeWire units.
+### Issue 4: Duplicate nodes
+- ExecStartPre cleanup only catches modules with soundsync in args
+- Multiple WirePlumber instances can exist
+- Orphaned pw-loopback or filter-chain processes from previous runs
 
-### Remaining Risks
-- No integration test coverage for D-Bus reconnection (requires live BlueZ)
-- Systemd `After=` is ordering only, not readiness — the app-level probe mitigates this
-- If PipeWire never becomes ready within 30s, pipeline still attempts init (logs warning)
+## Implementation
+
+### Phase 1: Build soundsync-doctor.sh (comprehensive diagnostic + repair)
+### Phase 2: Harden install.sh (verify restarts, auto-recover)
+### Phase 3: Fix service file template
+### Phase 4: Validate, commit, push
