@@ -206,6 +206,18 @@ configure_wireplumber() {
     USER_HOME=$(eval echo "~${RUN_USER}")
     local WP_USER_LUA_DIR="${USER_HOME}/.config/wireplumber/bluetooth.lua.d"
 
+    log "Detected WirePlumber version: ${WP_VERSION}"
+
+    # Clean up wrong-format configs from previous installs
+    if dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
+        # WP 0.5+: remove stale Lua configs
+        rm -f "${WP_LUA_DIR}/51-soundsync.lua" 2>/dev/null || true
+        rm -f "${WP_USER_LUA_DIR}/51-soundsync-a2dp.lua" 2>/dev/null || true
+    else
+        # WP 0.4.x: remove stale .conf configs (WP 0.4.x ignores these!)
+        rm -f "${WP_CONF_DIR}/51-soundsync.conf" 2>/dev/null || true
+    fi
+
     # Check version FIRST (not directory existence — we may have created the dir ourselves)
     if dpkg --compare-versions "${WP_VERSION}" ge "0.5" 2>/dev/null; then
         # WirePlumber 0.5+ (SPA JSON config)

@@ -14,6 +14,13 @@ set -uo pipefail
 # SECTION A: SETUP & HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Require root for repair operations
+if [[ $EUID -ne 0 ]] && [[ "${1:-}" != "--diagnose-only" ]]; then
+    echo "This script must be run as root for repairs. Use: sudo $0 $*"
+    echo "Or run with --diagnose-only to skip repairs."
+    exit 1
+fi
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -286,35 +293,80 @@ else
     BT_SPA_INSTALLED=false
 fi
 
-# ── C6: WirePlumber A2DP config ──────────────────────────────────────────────
+# ── C6: WirePlumber A2DP config (MUST match WP version) ─────────────────────
 WP_A2DP_CONFIG=false
 WP_A2DP_CONFIG_PATH=""
+WP_A2DP_WRONG_FORMAT=false
 
-# Check WirePlumber 0.5+ conf.d
-for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*; do
-    if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
-        ok "WirePlumber A2DP config found: $f"
-        WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
-        break
+# Determine if this is WP 0.4.x or 0.5+
+WP_IS_05=false
+if [[ -n "$WP_VER" ]] && [[ "$WP_VER" != "unknown" ]]; then
+    WP_MAJOR_MINOR=$(echo "$WP_VER" | grep -oP '^\d+\.\d+' || echo "0.4")
+    if dpkg --compare-versions "$WP_MAJOR_MINOR" ge "0.5" 2>/dev/null; then
+        WP_IS_05=true
     fi
-done
+fi
+info "WirePlumber config format: $($WP_IS_05 && echo '0.5+ (.conf)' || echo '0.4.x (Lua)')"
 
-# Check WirePlumber 0.4.x lua dirs
-if ! $WP_A2DP_CONFIG; then
+if $WP_IS_05; then
+    # WP 0.5+: check conf.d
+    for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*; do
+        if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
+            ok "WirePlumber A2DP config found: $f (correct format for WP 0.5+)"
+            WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
+            break
+        fi
+    done
+else
+    # WP 0.4.x: check Lua dirs
     for dir in /etc/wireplumber/bluetooth.lua.d \
                "$(eval echo "~${RUN_USER}")/.config/wireplumber/bluetooth.lua.d"; do
         for f in "$dir"/51-soundsync*; do
             if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
-                ok "WirePlumber A2DP config found: $f"
+                ok "WirePlumber A2DP config found: $f (correct format for WP 0.4.x)"
                 WP_A2DP_CONFIG=true; WP_A2DP_CONFIG_PATH="$f"
                 break 2
             fi
         done
     done
+
+    # Check if a .conf file exists but is WRONG format for 0.4.x
+    for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*; do
+        if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
+            fail "Found $f but WP $WP_VER is 0.4.x — this .conf file is IGNORED!"
+            info "  WP 0.4.x needs Lua config in bluetooth.lua.d/, not .conf in wireplumber.conf.d/"
+            WP_A2DP_WRONG_FORMAT=true
+            break
+        fi
+    done
 fi
 
 if ! $WP_A2DP_CONFIG; then
-    fail "WirePlumber A2DP sink config NOT found — phone cannot see SoundSync as speaker"
+    fail "WirePlumber A2DP sink config NOT found (or wrong format for WP $WP_VER)"
+fi
+
+# ── C7: Detect conflicting audio servers ─────────────────────────────────────
+CONFLICTING_AUDIO=false
+
+# Check for real PulseAudio (not PipeWire's pipewire-pulse)
+if pgrep -x "pulseaudio" &>/dev/null; then
+    fail "PulseAudio daemon running — conflicts with PipeWire Bluetooth!"
+    info "  PulseAudio and PipeWire cannot both manage Bluetooth audio"
+    CONFLICTING_AUDIO=true
+fi
+
+# Check for bluez-alsa
+if pgrep -f "bluealsa" &>/dev/null; then
+    fail "bluez-alsa (bluealsa) running — steals BT transports from WirePlumber!"
+    CONFLICTING_AUDIO=true
+fi
+if systemctl is-active --quiet bluealsa 2>/dev/null; then
+    fail "bluealsa.service is active — must be stopped for BT audio to work"
+    CONFLICTING_AUDIO=true
+fi
+
+if ! $CONFLICTING_AUDIO; then
+    ok "No conflicting audio servers detected"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -360,7 +412,8 @@ else
 fi
 
 # ── D4: Duplicate modules ───────────────────────────────────────────────────
-DUPE_COUNT=$(grep -c "soundsync" "$REPORT_DIR/pa-modules.txt" 2>/dev/null || echo "0")
+DUPE_COUNT=$(grep -c "soundsync" "$REPORT_DIR/pa-modules.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
+DUPE_COUNT=${DUPE_COUNT:-0}
 if [[ "$DUPE_COUNT" -gt 2 ]]; then
     fail "Found $DUPE_COUNT SoundSync modules (expected <=2) — duplicates exist"
 elif [[ "$DUPE_COUNT" -gt 0 ]]; then
@@ -368,7 +421,8 @@ elif [[ "$DUPE_COUNT" -gt 0 ]]; then
 fi
 
 # ── D5: Bluetooth audio nodes ───────────────────────────────────────────────
-BT_NODE_COUNT=$(grep -c "bluez_input\|bluez_source" "$REPORT_DIR/pw-objects.txt" 2>/dev/null || echo "0")
+BT_NODE_COUNT=$(grep -c "bluez_input\|bluez_source" "$REPORT_DIR/pw-objects.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
+BT_NODE_COUNT=${BT_NODE_COUNT:-0}
 if [[ "$BT_NODE_COUNT" -gt 0 ]]; then
     ok "Bluetooth audio nodes in PipeWire: $BT_NODE_COUNT"
 else
@@ -389,7 +443,8 @@ else
 fi
 
 # ── D8: BlueZ5 devices in PipeWire (CRITICAL for BT audio) ─────────────────
-BLUEZ5_DEVICE_COUNT=$(grep -c "device.api.*=.*bluez5\|api.bluez5" "$REPORT_DIR/pw-objects.txt" 2>/dev/null || echo "0")
+BLUEZ5_DEVICE_COUNT=$(grep -c "device.api.*=.*bluez5\|api.bluez5" "$REPORT_DIR/pw-objects.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
+BLUEZ5_DEVICE_COUNT=${BLUEZ5_DEVICE_COUNT:-0}
 if [[ "$BLUEZ5_DEVICE_COUNT" -gt 0 ]]; then
     ok "WirePlumber BlueZ5 monitor active ($BLUEZ5_DEVICE_COUNT device(s))"
 else
@@ -525,13 +580,46 @@ BTCONF
         ACTIONS+=("Wrote /etc/bluetooth/main.conf with speaker Class 0x240414")
     fi
 
+    # ── E5c: Stop conflicting audio servers ─────────────────────────────────
+    if $CONFLICTING_AUDIO; then
+        info "Step 5c: Stopping conflicting audio servers..."
+        if pgrep -x "pulseaudio" &>/dev/null; then
+            killall pulseaudio 2>/dev/null || true
+            # Prevent PulseAudio from auto-respawning
+            if [[ -f /etc/pulse/client.conf ]]; then
+                if ! grep -q "autospawn = no" /etc/pulse/client.conf 2>/dev/null; then
+                    echo "autospawn = no" >> /etc/pulse/client.conf
+                fi
+            fi
+            ACTIONS+=("Killed PulseAudio daemon")
+        fi
+        if pgrep -f "bluealsa" &>/dev/null; then
+            killall bluealsa 2>/dev/null || true
+            ACTIONS+=("Killed bluez-alsa")
+        fi
+        if systemctl is-active --quiet bluealsa 2>/dev/null; then
+            systemctl stop bluealsa 2>/dev/null || true
+            systemctl disable bluealsa 2>/dev/null || true
+            ACTIONS+=("Stopped and disabled bluealsa.service")
+        fi
+    fi
+
     # ── E6: Fix WirePlumber A2DP config ──────────────────────────────────────
     info "Step 6: Checking WirePlumber A2DP config..."
-    if ! $WP_A2DP_CONFIG; then
-        local wp_ver
-        wp_ver=$(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "0.4")
 
-        if dpkg --compare-versions "$wp_ver" ge "0.5" 2>/dev/null; then
+    # If wrong format exists, remove it first
+    if $WP_A2DP_WRONG_FORMAT; then
+        info "Removing wrong-format WP config..."
+        for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*; do
+            if [[ -f "$f" ]]; then
+                rm -f "$f"
+                ACTIONS+=("Removed wrong-format WP config: $f")
+            fi
+        done
+    fi
+
+    if ! $WP_A2DP_CONFIG || $WP_A2DP_WRONG_FORMAT; then
+        if $WP_IS_05; then
             mkdir -p /etc/wireplumber/wireplumber.conf.d
             cat > /etc/wireplumber/wireplumber.conf.d/51-soundsync.conf << 'WPCONF'
 # SoundSync: Enable A2DP sink role
@@ -544,11 +632,13 @@ monitor.bluez.properties = {
     bluez5.a2dp.opus.pro.channels = 0
 }
 WPCONF
-            ACTIONS+=("Wrote WirePlumber 0.5+ A2DP config")
+            ok "Wrote WirePlumber 0.5+ A2DP config"
+            ACTIONS+=("Wrote WirePlumber 0.5+ A2DP config to wireplumber.conf.d/")
         else
+            # WP 0.4.x: Write Lua config (both system and user locations)
             mkdir -p /etc/wireplumber/bluetooth.lua.d
             cat > /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua << 'WPLUA'
--- SoundSync: Enable A2DP sink role
+-- SoundSync: Enable A2DP sink role for Bluetooth audio reception
 bluez_monitor.enabled = true
 bluez_monitor.properties = {
     ["bluez5.roles"] = "[ a2dp_sink ]",
@@ -558,7 +648,16 @@ bluez_monitor.properties = {
     ["bluez5.enable-hw-volume"] = true,
 }
 WPLUA
-            ACTIONS+=("Wrote WirePlumber 0.4.x A2DP config")
+            ok "Wrote WirePlumber 0.4.x Lua A2DP config to /etc/wireplumber/bluetooth.lua.d/"
+            ACTIONS+=("Wrote WirePlumber 0.4.x Lua A2DP config")
+
+            # Also write to user config dir for extra reliability
+            local user_wp_dir
+            user_wp_dir="$(eval echo "~${RUN_USER}")/.config/wireplumber/bluetooth.lua.d"
+            mkdir -p "$user_wp_dir"
+            cp /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua "$user_wp_dir/51-soundsync-a2dp.lua"
+            chown -R "${RUN_USER}:${RUN_USER}" "$(eval echo "~${RUN_USER}")/.config/wireplumber" 2>/dev/null || true
+            ACTIONS+=("Wrote WP 0.4.x user config to $user_wp_dir/")
         fi
         WP_A2DP_CONFIG=true
     fi
@@ -739,7 +838,8 @@ except Exception as e:
 
     # Clean duplicate modules
     local mod_count
-    mod_count=$(run_as_user "pactl list short modules 2>/dev/null | grep -c 'soundsync'" || echo "0")
+    mod_count=$(run_as_user "pactl list short modules 2>/dev/null | grep -c 'soundsync' | tr -dc '0-9'" || echo "0")
+    mod_count=${mod_count:-0}
     if [[ "$mod_count" -gt 2 ]]; then
         warn "Found $mod_count SoundSync modules — cleaning duplicates"
         run_as_user "pactl list short modules" 2>/dev/null | \
@@ -760,7 +860,8 @@ except Exception as e:
     # WirePlumber may need a few seconds after start to enumerate BT devices
     local bluez_device=0
     for attempt in 1 2 3 4 5; do
-        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" | tr -dc '0-9' || echo "0")
+        bluez_device=${bluez_device:-0}
         if [[ "$bluez_device" -gt 0 ]]; then
             break
         fi
@@ -808,7 +909,8 @@ except Exception as e:
         info "Attempting WirePlumber restart for BlueZ5 recovery..."
         run_as_user "systemctl --user restart wireplumber" 2>/dev/null || true
         sleep 5
-        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" | tr -dc '0-9' || echo "0")
+        bluez_device=${bluez_device:-0}
         if [[ "$bluez_device" -gt 0 ]]; then
             ok "WirePlumber BlueZ5 monitor active after re-restart ($bluez_device device(s))"
             ACTIONS+=("Re-restarted WirePlumber to activate BlueZ5 monitor")
@@ -942,7 +1044,8 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
     fi
 
     # Verify BlueZ5 in PipeWire
-    post_bluez5=$(echo "$post_objects" | grep -c "device.api.*=.*bluez5\|api.bluez5" || echo "0")
+    post_bluez5=$(echo "$post_objects" | grep -c "device.api.*=.*bluez5\|api.bluez5" | tr -dc '0-9' || echo "0")
+    post_bluez5=${post_bluez5:-0}
     if [[ "$post_bluez5" -gt 0 ]]; then
         ok "POST: WirePlumber BlueZ5 monitor active"
     else
@@ -1045,7 +1148,8 @@ final_status "Bluetooth active"          "systemctl is-active bluetooth"
 final_status "SoundSync active"          "systemctl is-active soundsync"
 final_status "BT adapter discoverable"   "bluetoothctl show 2>/dev/null | grep -q 'Discoverable: yes'"
 final_status "libspa-0.2-bluetooth"      "find /usr/lib -path '*/spa-0.2/bluez5' -type d 2>/dev/null | grep -q ."
-final_status "WP A2DP sink config"       "test -n '$(find /etc/wireplumber -name '51-soundsync*' 2>/dev/null | head -1)' || test -n '$(find $(eval echo ~${RUN_USER})/.config/wireplumber -name '51-soundsync*' 2>/dev/null | head -1)'"
+final_status "WP A2DP config (correct fmt)" "{ $WP_IS_05 && find /etc/wireplumber/wireplumber.conf.d -name '51-soundsync*.conf' 2>/dev/null | grep -q .; } || { ! $WP_IS_05 && { find /etc/wireplumber/bluetooth.lua.d -name '51-soundsync*.lua' 2>/dev/null | grep -q . || find $(eval echo ~${RUN_USER})/.config/wireplumber/bluetooth.lua.d -name '51-soundsync*.lua' 2>/dev/null | grep -q .; }; }"
+final_status "No conflicting audio svcs" "! pgrep -x pulseaudio &>/dev/null && ! pgrep -f bluealsa &>/dev/null"
 final_status "Default sink → SoundSync" "run_as_user 'pactl get-default-sink 2>/dev/null' | grep -q 'soundsync\|effect_input'"
 final_status "BlueZ5 in PipeWire"       "run_as_user 'pw-cli list-objects 2>/dev/null' | grep -q 'bluez5'"
 final_status "XDG_RUNTIME_DIR exists"    "test -d /run/user/${RUN_UID}"

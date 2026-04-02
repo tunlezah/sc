@@ -48,3 +48,16 @@
 ## Bluetooth Class of Device Determines Phone Behavior
 **Pattern:** With Class `0x0004010c` (Computer), phones see SoundSync as a laptop and may not offer A2DP streaming. With `0x240414` (Audio/Video + Rendering + Loudspeaker), phones see it as a speaker and auto-stream.
 **Rule:** The doctor script must verify the *runtime* Class of Device via `bluetoothctl show`, not just the config file. If wrong, fix the config AND use `hciconfig hci0 class 0x240414` for immediate effect without reboot.
+
+## WirePlumber 0.4.x Ignores wireplumber.conf.d/ Files
+**Pattern:** WirePlumber 0.5+ uses SPA-JSON `.conf` files in `/etc/wireplumber/wireplumber.conf.d/`. WirePlumber 0.4.x uses Lua files in `/etc/wireplumber/bluetooth.lua.d/`. A `.conf` file written for WP 0.5+ is **silently ignored** by WP 0.4.x — the diagnostic check passes ("config file found with a2dp_sink") but the config is never loaded.
+**Root Cause:** The version detection code wrote the correct format, but a previous run (or the old doctor script) wrote the wrong format. The diagnostic only checked "does any file with a2dp_sink exist?" without verifying it matches the WP version.
+**Rule:** ALWAYS verify the config format matches the detected WP version. If WP is 0.4.x, only Lua configs in `bluetooth.lua.d/` count. Clean up wrong-format configs from other directories.
+
+## "Unknown Transport" = Competing Audio Server
+**Pattern:** WirePlumber logs "Properties changed in unknown transport... Multiple sound server instances" when another process (PulseAudio daemon, bluez-alsa) registers competing Bluetooth endpoints with BlueZ. WirePlumber cannot acquire the transport and never creates `bluez_input.*` nodes.
+**Rule:** The doctor script must detect and stop PulseAudio (the real daemon, not PipeWire-pulse) and bluez-alsa before restarting audio services. Check with `pgrep -x pulseaudio` and `pgrep -f bluealsa`.
+
+## grep -c Through run_as_user Returns Multiline Text
+**Pattern:** `run_as_user "pw-cli list-objects | grep -c something"` returns output with extra newlines when piped through `su -c`. Bash `[[ $var -gt 0 ]]` fails with "syntax error in expression" when var contains `0\n0` instead of `0`.
+**Rule:** Always pipe `grep -c` through `tr -dc '0-9'` and add a `${var:-0}` fallback when the result will be used in arithmetic comparisons.
