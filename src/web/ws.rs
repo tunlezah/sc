@@ -368,10 +368,15 @@ struct SdpData {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct IceCandidateData {
     candidate: String,
+    /// Must be "sdpMid" (not "sdp_mid") to match the WebRTC spec.
+    #[serde(rename = "sdpMid")]
     sdp_mid: Option<String>,
+    /// Must be "sdpMLineIndex" — serde's camelCase produces "sdpMlineIndex"
+    /// (lowercase 'l'), which Safari rejects because it requires at least one
+    /// of sdpMid or sdpMLineIndex to be non-null on every ICE candidate.
+    #[serde(rename = "sdpMLineIndex")]
     sdp_mline_index: Option<u16>,
 }
 
