@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info};
+use tokio::time::{self, Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -197,57 +198,123 @@ impl WebRtcManager {
             .set_local_description(answer.clone())
             .await?;
 
-        // Start the audio pump task: subscribe to PCM, encode Opus, write RTP
+        // Start the audio pump task: subscribe to PCM, encode Opus, write RTP.
+        //
+        // Design choices for stutter-free streaming:
+        // 1. Opus encoding runs on a blocking thread (CPU-bound, not async-safe)
+        // 2. RTP timestamps advance correctly when frames are dropped (lag)
+        // 3. Packets are paced at 20ms intervals to prevent burst delivery
+        // 4. Health metrics are logged periodically to detect degradation
         let track = Arc::clone(&audio_track);
         let mut audio_rx = self.audio_sender.subscribe();
 
         let pump_task = tokio::spawn(async move {
-            let mut encoder = match OpusEncoder::new() {
+            let encoder = match OpusEncoder::new() {
                 Ok(enc) => enc,
                 Err(e) => {
                     error!("Failed to create Opus encoder: {}", e);
                     return;
                 }
             };
+            // Wrap encoder in Arc<Mutex> for use with spawn_blocking
+            let encoder = Arc::new(std::sync::Mutex::new(encoder));
 
             let mut timestamp: u32 = 0;
             let mut sequence_number: u16 = 0;
 
+            // Pacing: send one RTP packet every 20ms to match the Opus frame
+            // duration. This smooths out delivery even if the capture process
+            // delivers PCM in bursts (e.g. OS scheduler delays).
+            let mut pacer = time::interval(Duration::from_millis(20));
+            pacer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+            // Health monitoring: track lag events and frames sent
+            let mut total_frames_sent: u64 = 0;
+            let mut total_lag_frames: u64 = 0;
+            let health_start = Instant::now();
+            let mut last_health_log = Instant::now();
+            const HEALTH_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
+            // Opus frame = 960 samples per channel at 48 kHz (20ms)
+            const SAMPLES_PER_FRAME: u32 = 960;
+
             loop {
-                match audio_rx.recv().await {
-                    Ok(pcm_samples) => {
-                        // Encode 20 ms of interleaved f32 PCM to Opus
-                        let opus_data = match encoder.encode_frame(&pcm_samples) {
-                            Some(data) => data,
-                            None => continue,
-                        };
-
-                        // Build RTP packet. The webrtc crate's interceptor chain
-                        // handles SSRC and negotiated payload type, but we must
-                        // provide sequence numbers and timestamps.
-                        let packet = rtp::packet::Packet {
-                            header: rtp::header::Header {
-                                version: 2,
-                                payload_type: 111, // dynamic PT for Opus
-                                sequence_number,
-                                timestamp,
-                                ..Default::default()
-                            },
-                            payload: bytes::Bytes::from(opus_data),
-                        };
-
-                        if track.write_rtp(&packet).await.is_err() {
-                            break;
-                        }
-
-                        // Opus at 48 kHz, 20 ms frames = 960 samples per frame
-                        timestamp = timestamp.wrapping_add(960);
-                        sequence_number = sequence_number.wrapping_add(1);
-                    }
+                // Wait for next PCM frame from the broadcast channel
+                let pcm_samples = match audio_rx.recv().await {
+                    Ok(samples) => samples,
                     Err(broadcast::error::RecvError::Closed) => break,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        debug!("WebRTC audio lagged by {} frames, skipping", n);
+                        // CRITICAL: Advance RTP timestamp and sequence number to
+                        // account for the dropped frames. Without this, the
+                        // browser's jitter buffer sees timestamps that are behind
+                        // wall-clock time, causing it to play audio too fast
+                        // (stuttering) as it tries to catch up.
+                        let lag_frames = n as u32;
+                        timestamp = timestamp.wrapping_add(lag_frames * SAMPLES_PER_FRAME);
+                        sequence_number = sequence_number.wrapping_add(lag_frames as u16);
+                        total_lag_frames += n;
+                        warn!(
+                            "WebRTC audio lagged by {} frames — advanced RTP ts by {} samples",
+                            n,
+                            lag_frames * SAMPLES_PER_FRAME
+                        );
+                        continue;
                     }
+                };
+
+                // Encode Opus on a blocking thread to avoid stalling the Tokio
+                // runtime. Opus encoding is CPU-bound (~0.5-2ms per frame) and
+                // must not delay other async tasks.
+                let enc = Arc::clone(&encoder);
+                let opus_data =
+                    match tokio::task::spawn_blocking(move || {
+                        let mut enc = enc.lock().unwrap();
+                        enc.encode_frame(&pcm_samples)
+                    })
+                    .await
+                    {
+                        Ok(Some(data)) => data,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            error!("Opus encode task panicked: {}", e);
+                            break;
+                        }
+                    };
+
+                // Pace: wait for the next 20ms tick before sending. This
+                // prevents packet bursts when the capture delivers multiple
+                // frames at once after an OS scheduling delay.
+                pacer.tick().await;
+
+                // Build and send RTP packet
+                let packet = rtp::packet::Packet {
+                    header: rtp::header::Header {
+                        version: 2,
+                        payload_type: 111, // dynamic PT for Opus
+                        sequence_number,
+                        timestamp,
+                        ..Default::default()
+                    },
+                    payload: bytes::Bytes::from(opus_data),
+                };
+
+                if track.write_rtp(&packet).await.is_err() {
+                    break;
+                }
+
+                timestamp = timestamp.wrapping_add(SAMPLES_PER_FRAME);
+                sequence_number = sequence_number.wrapping_add(1);
+                total_frames_sent += 1;
+
+                // Periodic health log
+                if last_health_log.elapsed() >= HEALTH_LOG_INTERVAL {
+                    let elapsed = health_start.elapsed().as_secs();
+                    let expected = elapsed * 50; // 50 frames/sec at 20ms
+                    info!(
+                        "WebRTC health: sent={} lag_dropped={} uptime={}s expected≈{}",
+                        total_frames_sent, total_lag_frames, elapsed, expected
+                    );
+                    last_health_log = Instant::now();
                 }
             }
         });

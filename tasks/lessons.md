@@ -66,3 +66,16 @@
 ## grep -c Through run_as_user Returns Multiline Text
 **Pattern:** `run_as_user "pw-cli list-objects | grep -c something"` returns output with extra newlines when piped through `su -c`. Bash `[[ $var -gt 0 ]]` fails with "syntax error in expression" when var contains `0\n0` instead of `0`.
 **Rule:** Always pipe `grep -c` through `tr -dc '0-9'` and add a `${var:-0}` fallback when the result will be used in arithmetic comparisons.
+
+## serde rename_all = "camelCase" Mishandles Acronyms in Field Names
+**Pattern:** `#[serde(rename_all = "camelCase")]` on a struct with field `sdp_mline_index` produces JSON key `sdpMlineIndex` (lowercase 'l'). The WebRTC spec and all browsers expect `sdpMLineIndex` (capital 'L' because "MLine" is an abbreviation).
+**Impact:** Safari strictly requires at least one of `sdpMid` or `sdpMLineIndex` to be non-null on every ICE candidate. Since the wrong key name means the client never reads the value, Safari drops valid candidates and the WebRTC connection fails entirely. Chrome is more lenient and works anyway if `sdpMid` is present.
+**Rule:** Never use `rename_all = "camelCase"` on structs with acronym-containing field names. Use explicit `#[serde(rename = "...")]` on each field to match the exact casing required by the spec.
+
+## RTP Timestamps Must Advance When Frames Are Dropped
+**Pattern:** When a broadcast channel receiver reports `Lagged(n)` (n frames were dropped because the receiver was too slow), the RTP timestamp and sequence number must advance by `n * samples_per_frame` and `n` respectively. Without this, the browser's jitter buffer sees timestamps that are behind wall-clock time, causing it to play audio too fast as it tries to "catch up," producing audible stuttering.
+**Rule:** Always account for dropped frames in RTP timestamp/sequence tracking. After a lag event, advance both counters to maintain the real-time relationship between timestamps and wall-clock time.
+
+## CPU-Bound Work Must Not Run on Tokio Async Threads
+**Pattern:** Opus encoding (`encode_float`) takes 0.5-2ms per 20ms frame. Running this synchronously inside a `tokio::spawn` task blocks the async runtime thread, delaying all other async work on that thread (including other WebRTC sessions, WebSocket messages, and HTTP requests).
+**Rule:** Use `tokio::task::spawn_blocking` for CPU-bound audio encoding. Wrap the encoder in `Arc<Mutex>` for cross-thread access. This keeps the async runtime responsive and prevents cascading latency spikes.
