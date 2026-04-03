@@ -368,6 +368,7 @@ struct SdpData {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct IceCandidateData {
     candidate: String,
     sdp_mid: Option<String>,

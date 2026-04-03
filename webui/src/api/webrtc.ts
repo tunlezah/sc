@@ -72,10 +72,29 @@ export class WebRTCClient {
     }
   }
 
-  async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    if (this.pc) {
-      await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+  async handleIceCandidate(candidate: Record<string, unknown>): Promise<void> {
+    if (!this.pc) return;
+
+    // Server sends snake_case (sdp_mid, sdp_mline_index) but RTCIceCandidateInit
+    // requires camelCase (sdpMid, sdpMLineIndex). Normalize the properties.
+    const sdpMid = (candidate.sdpMid ?? candidate.sdp_mid ?? null) as string | null;
+    const sdpMLineIndex = (candidate.sdpMLineIndex ?? candidate.sdp_mline_index ?? null) as
+      | number
+      | null;
+
+    // Safari strictly requires at least one of sdpMid or sdpMLineIndex to be non-null.
+    // Drop candidates that violate this — they are end-of-candidates signals or malformed.
+    if (sdpMid == null && sdpMLineIndex == null) {
+      return;
     }
+
+    const init: RTCIceCandidateInit = {
+      candidate: candidate.candidate as string,
+      sdpMid,
+      sdpMLineIndex,
+    };
+
+    await this.pc.addIceCandidate(new RTCIceCandidate(init));
   }
 
   stop(): void {
