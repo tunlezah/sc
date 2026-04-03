@@ -514,13 +514,48 @@ else
 fi
 
 # ── D8: BlueZ5 devices in PipeWire (CRITICAL for BT audio) ─────────────────
-BLUEZ5_DEVICE_COUNT=$(grep -c "device.api.*=.*bluez5\|api.bluez5" "$REPORT_DIR/pw-objects.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
-BLUEZ5_DEVICE_COUNT=${BLUEZ5_DEVICE_COUNT:-0}
-if [[ "$BLUEZ5_DEVICE_COUNT" -gt 0 ]]; then
-    ok "WirePlumber BlueZ5 monitor active ($BLUEZ5_DEVICE_COUNT device(s))"
+# Check for bluez5 in multiple ways — the enum device may not have "bluez5" as a
+# simple grep-able property. Check pw-dump for more reliable detection.
+BLUEZ5_DEVICE_COUNT=0
+# Method 1: grep pw-cli objects
+_bc1=$(grep -ciE "bluez|bluetooth" "$REPORT_DIR/pw-objects.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
+_bc1=${_bc1:-0}
+# Method 2: check pw-dump for bluez5 factory
+_bc2=$(grep -c "api.bluez5" "$REPORT_DIR/pw-dump.json" 2>/dev/null | tr -dc '0-9' || echo "0")
+_bc2=${_bc2:-0}
+# Method 3: check wpctl status for any BT reference
+_wpctl_bt=$(run_as_user "wpctl status 2>/dev/null" | grep -ciE "bluez|bluetooth" || echo "0")
+_wpctl_bt=$(echo "$_wpctl_bt" | tr -dc '0-9')
+_wpctl_bt=${_wpctl_bt:-0}
+
+if [[ "$_bc1" -gt 0 ]] || [[ "$_bc2" -gt 0 ]]; then
+    ok "BlueZ5 integration active in PipeWire (objects: $_bc1, dump refs: $_bc2)"
+    BLUEZ5_DEVICE_COUNT=1
+elif [[ "$_wpctl_bt" -gt 0 ]]; then
+    ok "BlueZ5 detected via wpctl status"
+    BLUEZ5_DEVICE_COUNT=1
 else
-    fail "No BlueZ5 devices in PipeWire — WirePlumber cannot see Bluetooth hardware"
-    info "  Root cause: libspa-0.2-bluetooth missing OR WirePlumber A2DP config not loaded"
+    # Method 4: Check if the bluez monitor script is loaded and endpoints registered
+    # This is the definitive test — check if WP registered A2DP endpoints with BlueZ
+    local _bt_endpoints
+    _bt_endpoints=$(run_as_user "dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0 org.freedesktop.DBus.Properties.Get string:org.bluez.Media1 string:SupportedUUIDs 2>/dev/null" | grep -c "string" || echo "0")
+    _bt_endpoints=$(echo "$_bt_endpoints" | tr -dc '0-9')
+    _bt_endpoints=${_bt_endpoints:-0}
+
+    # Also check if MediaEndpoint paths exist (registered by SPA bluez5)
+    local _media_ep
+    _media_ep=$(run_as_user "busctl --system tree org.bluez 2>/dev/null" | grep -c "MediaEndpoint" || echo "0")
+    _media_ep=$(echo "$_media_ep" | tr -dc '0-9')
+    _media_ep=${_media_ep:-0}
+
+    if [[ "$_media_ep" -gt 0 ]]; then
+        ok "BlueZ5 SPA registered MediaEndpoints with BlueZ ($_media_ep endpoints)"
+        info "  BT adapter is monitored. bluez_input.* nodes appear when a phone connects and streams."
+        BLUEZ5_DEVICE_COUNT=1
+    else
+        fail "No BlueZ5 devices in PipeWire — WirePlumber BlueZ monitor not active"
+        info "  Root cause: libspa-0.2-bluetooth missing OR WirePlumber A2DP config not loaded"
+    fi
 fi
 
 # ── D9: Default sink routing check ──────────────────────────────────────────
@@ -1012,19 +1047,25 @@ except Exception as e:
     # ── E9: Verify WirePlumber BlueZ monitor is active ───────────────────────
     info "Step 9: Verifying WirePlumber BlueZ5 monitor..."
 
-    # WirePlumber may need a few seconds after start to enumerate BT devices
+    # The definitive check: did the SPA bluez5 plugin register MediaEndpoints with BlueZ?
+    # This proves WirePlumber loaded the factory, connected to D-Bus, and registered A2DP.
+    # Note: When no phone is connected/streaming, there won't be bluez_input.* PipeWire nodes
+    # or device.api=bluez5 in pw-cli — that's NORMAL. The endpoints prove the monitor is active.
     local bluez_device=0
     for attempt in 1 2 3 4 5; do
-        bluez_device=$(run_as_user "pw-cli list-objects 2>/dev/null" | grep -c "device.api.*=.*bluez5\|api.bluez5" | tr -dc '0-9' || echo "0")
-        bluez_device=${bluez_device:-0}
-        if [[ "$bluez_device" -gt 0 ]]; then
+        local ep_count
+        ep_count=$(run_as_user "busctl --system tree org.bluez 2>/dev/null" | grep -c "MediaEndpoint" | tr -dc '0-9' || echo "0")
+        ep_count=${ep_count:-0}
+        if [[ "$ep_count" -gt 0 ]]; then
+            bluez_device=1
             break
         fi
         sleep 2
     done
 
     if [[ "$bluez_device" -gt 0 ]]; then
-        ok "WirePlumber BlueZ5 monitor active ($bluez_device device(s) in PipeWire)"
+        ok "WirePlumber BlueZ5 monitor active (A2DP MediaEndpoints registered with BlueZ)"
+        info "  Audio will flow when a phone connects and starts streaming"
     else
         warn "No BlueZ5 devices in PipeWire graph after 10s"
 
@@ -1230,13 +1271,13 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
         warn "POST: Default sink is '$post_default' — may need manual correction"
     fi
 
-    # Verify BlueZ5 in PipeWire
-    post_bluez5=$(echo "$post_objects" | grep -c "device.api.*=.*bluez5\|api.bluez5" | tr -dc '0-9' || echo "0")
+    # Verify BlueZ5 A2DP endpoints registered
+    post_bluez5=$(run_as_user "busctl --system tree org.bluez 2>/dev/null" | grep -c "MediaEndpoint" | tr -dc '0-9' || echo "0")
     post_bluez5=${post_bluez5:-0}
     if [[ "$post_bluez5" -gt 0 ]]; then
-        ok "POST: WirePlumber BlueZ5 monitor active"
+        ok "POST: WirePlumber BlueZ5 monitor active ($post_bluez5 A2DP endpoints registered)"
     else
-        warn "POST: BlueZ5 not yet in PipeWire — may take a few seconds after WP restart"
+        warn "POST: BlueZ5 A2DP endpoints not registered yet — WP may still be initializing"
     fi
 
     # Verify BT adapter
@@ -1338,7 +1379,7 @@ final_status "libspa-0.2-bluetooth"      "find /usr/lib -path '*/spa-0.2/bluez5'
 final_status "WP A2DP config (correct fmt)" "{ $WP_IS_05 && find /etc/wireplumber/wireplumber.conf.d -name '51-soundsync*.conf' 2>/dev/null | grep -q .; } || { ! $WP_IS_05 && { find /etc/wireplumber/bluetooth.lua.d -name '51-soundsync*.lua' 2>/dev/null | grep -q . || find $(eval echo ~${RUN_USER})/.config/wireplumber/bluetooth.lua.d -name '51-soundsync*.lua' 2>/dev/null | grep -q .; }; }"
 final_status "No conflicting audio svcs" "! pgrep -x pulseaudio &>/dev/null && ! pgrep -f bluealsa &>/dev/null"
 final_status "Default sink → SoundSync" "run_as_user 'pactl get-default-sink 2>/dev/null' | grep -q 'soundsync\|effect_input'"
-final_status "BlueZ5 in PipeWire"       "run_as_user 'pw-cli list-objects 2>/dev/null' | grep -q 'bluez5'"
+final_status "BlueZ5 A2DP endpoints"    "run_as_user 'busctl --system tree org.bluez 2>/dev/null' | grep -q 'MediaEndpoint'"
 final_status "XDG_RUNTIME_DIR exists"    "test -d /run/user/${RUN_UID}"
 final_status "DBus session socket"       "test -S /run/user/${RUN_UID}/bus"
 
@@ -1395,7 +1436,7 @@ if $JSON_OUTPUT; then
     "null_sink": $PIPE_NULL_SINK,
     "eq_sink": $PIPE_EQ_SINK,
     "default_sink": "$(run_as_user 'pactl get-default-sink' 2>/dev/null || echo "$PIPE_DEFAULT_SINK")",
-    "bluez5_in_pipewire": $(run_as_user 'pw-cli list-objects 2>/dev/null' | grep -q 'bluez5' && echo true || echo false),
+    "bluez5_endpoints_registered": $(run_as_user 'busctl --system tree org.bluez 2>/dev/null' | grep -q 'MediaEndpoint' && echo true || echo false),
     "capture_running": $(pgrep -f 'parec' &>/dev/null && echo true || echo false)
   },
   "report_dir": "$REPORT_DIR"
