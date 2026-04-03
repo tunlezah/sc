@@ -29,7 +29,10 @@ export class WebRTCClient {
 
     this.pc.ontrack = (event) => {
       if (this.audioElement) {
-        this.audioElement.srcObject = event.streams[0];
+        // Use event.track directly — webrtc-rs add_track() doesn't associate
+        // tracks with streams, so event.streams[0] is undefined.
+        const stream = event.streams[0] ?? new MediaStream([event.track]);
+        this.audioElement.srcObject = stream;
         this.audioElement.play().catch(() => {
           // autoplay may be blocked — user can tap the element
         });
@@ -69,10 +72,27 @@ export class WebRTCClient {
     }
   }
 
-  async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    if (this.pc) {
-      await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+  async handleIceCandidate(candidate: import('../types').IceCandidateMessage): Promise<void> {
+    if (!this.pc) return;
+
+    // Server may send snake_case (sdp_mid, sdp_mline_index) or camelCase
+    // (sdpMid, sdpMLineIndex). Normalize to camelCase for RTCIceCandidateInit.
+    const sdpMid = candidate.sdpMid ?? candidate.sdp_mid ?? null;
+    const sdpMLineIndex = candidate.sdpMLineIndex ?? candidate.sdp_mline_index ?? null;
+
+    // Safari strictly requires at least one of sdpMid or sdpMLineIndex to be non-null.
+    // Drop candidates that violate this — they are end-of-candidates signals or malformed.
+    if (sdpMid == null && sdpMLineIndex == null) {
+      return;
     }
+
+    const init: RTCIceCandidateInit = {
+      candidate: candidate.candidate,
+      sdpMid,
+      sdpMLineIndex,
+    };
+
+    await this.pc.addIceCandidate(new RTCIceCandidate(init));
   }
 
   stop(): void {
