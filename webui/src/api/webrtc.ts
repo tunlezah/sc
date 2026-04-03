@@ -29,7 +29,10 @@ export class WebRTCClient {
 
     this.pc.ontrack = (event) => {
       if (this.audioElement) {
-        this.audioElement.srcObject = event.streams[0];
+        // Use event.track directly — webrtc-rs add_track() doesn't associate
+        // tracks with streams, so event.streams[0] is undefined.
+        const stream = event.streams[0] ?? new MediaStream([event.track]);
+        this.audioElement.srcObject = stream;
         this.audioElement.play().catch(() => {
           // autoplay may be blocked — user can tap the element
         });
