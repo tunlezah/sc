@@ -159,6 +159,19 @@ if pgrep -x pulseaudio &>/dev/null; then fail "PulseAudio running!"; CONFLICTING
 if pgrep -f bluealsa &>/dev/null; then fail "bluez-alsa running!"; CONFLICTING_AUDIO=true; fi
 if ! $CONFLICTING_AUDIO; then ok "No conflicting audio servers"; fi
 
+# WirePlumber systemd sandbox check
+WP_SANDBOX_BLOCKS_BT=false
+if systemctl --user cat wireplumber.service 2>/dev/null | grep -q "MemoryDenyWriteExecute=yes"; then
+    WP_OVERRIDE_DIR="$HOME/.config/systemd/user/wireplumber.service.d"
+    if [[ -f "$WP_OVERRIDE_DIR/override.conf" ]] && grep -q "MemoryDenyWriteExecute=no" "$WP_OVERRIDE_DIR/override.conf" 2>/dev/null; then
+        ok "WP sandbox override active (BlueZ5 SPA can load)"
+    else
+        fail "WP systemd has MemoryDenyWriteExecute=yes — BLOCKS BlueZ5 SPA plugin!"
+        info "  BlueZ5 works manually but NOT via systemctl --user start wireplumber"
+        WP_SANDBOX_BLOCKS_BT=true
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION E: PIPEWIRE BLUETOOTH CHECK
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -247,7 +260,32 @@ if ! $DIAGNOSE_ONLY && [[ ${#ISSUES[@]} -gt 0 ]]; then
         ACTIONS+=("Stopped conflicting audio servers")
     fi
 
-    # F2: Fix WP config
+    # F2: Fix WirePlumber systemd sandbox (CRITICAL for BlueZ5)
+    # The stock wireplumber.service has MemoryDenyWriteExecute=yes which
+    # prevents the BlueZ5 SPA plugin (and codec libs like LDAC/aptX) from
+    # loading because they require writable+executable memory.
+    # This is why BlueZ5 works when WP runs manually but NOT via systemd.
+    WP_OVERRIDE_DIR="$HOME/.config/systemd/user/wireplumber.service.d"
+    WP_OVERRIDE="$WP_OVERRIDE_DIR/override.conf"
+    if systemctl --user cat wireplumber.service 2>/dev/null | grep -q "MemoryDenyWriteExecute=yes"; then
+        if [[ ! -f "$WP_OVERRIDE" ]] || ! grep -q "MemoryDenyWriteExecute=no" "$WP_OVERRIDE" 2>/dev/null; then
+            info "Fixing WirePlumber sandbox (MemoryDenyWriteExecute blocks BlueZ5 SPA)..."
+            mkdir -p "$WP_OVERRIDE_DIR"
+            cat > "$WP_OVERRIDE" << 'WPOVERRIDE'
+# SoundSync: Allow BlueZ5 SPA plugin to load
+# The BlueZ5 SPA plugin and Bluetooth codec libraries (LDAC, aptX)
+# require writable+executable memory which MemoryDenyWriteExecute blocks.
+# Without this override, WirePlumber starts but silently skips Bluetooth.
+[Service]
+MemoryDenyWriteExecute=no
+WPOVERRIDE
+            systemctl --user daemon-reload
+            ok "Created WirePlumber override to allow BlueZ5 SPA loading"
+            ACTIONS+=("Created WP systemd override: MemoryDenyWriteExecute=no")
+        fi
+    fi
+
+    # F3: Fix WP config
     if $WP_A2DP_WRONG_FORMAT || ! $WP_A2DP_CONFIG; then
         info "Fixing WirePlumber A2DP config..."
         # Remove all old soundsync WP configs
