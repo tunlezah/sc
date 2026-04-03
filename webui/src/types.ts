@@ -71,6 +71,15 @@ export interface AppState {
   airplay_active: string | null;
 }
 
+// ICE candidate from the server — may use camelCase or snake_case keys
+export interface IceCandidateMessage {
+  candidate: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  sdp_mid?: string | null;
+  sdp_mline_index?: number | null;
+}
+
 export type WsMessage =
   | { type: 'state_snapshot'; data: AppState }
   | { type: 'device_state_changed'; data: { address: string; name: string; state: DeviceState } }
@@ -80,7 +89,7 @@ export type WsMessage =
   | { type: 'spectrum_data'; data: { bands: number[] } }
   | { type: 'bluetooth_status_changed'; data: { status: string } }
   | { type: 'webrtc_answer'; data: { sdp: string } }
-  | { type: 'webrtc_ice_candidate'; data: RTCIceCandidateInit }
+  | { type: 'webrtc_ice_candidate'; data: IceCandidateMessage }
   | { type: 'cast_device_discovered'; data: CastDevice }
   | { type: 'cast_device_removed'; data: { device_id: string } }
   | { type: 'cast_session_started'; data: CastDevice }
