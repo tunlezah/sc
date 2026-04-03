@@ -210,25 +210,29 @@ impl WebRtcManager {
                 }
             };
 
+            info!("WebRTC audio pump started, waiting for PCM data...");
             let mut timestamp: u32 = 0;
             let mut sequence_number: u16 = 0;
+            let mut frames_sent: u64 = 0;
 
             loop {
                 match audio_rx.recv().await {
                     Ok(pcm_samples) => {
-                        // Encode 20 ms of interleaved f32 PCM to Opus
+                        if frames_sent == 0 {
+                            info!(
+                                "WebRTC audio pump: first PCM frame ({} samples)",
+                                pcm_samples.len()
+                            );
+                        }
                         let opus_data = match encoder.encode_frame(&pcm_samples) {
                             Some(data) => data,
                             None => continue,
                         };
 
-                        // Build RTP packet. The webrtc crate's interceptor chain
-                        // handles SSRC and negotiated payload type, but we must
-                        // provide sequence numbers and timestamps.
                         let packet = rtp::packet::Packet {
                             header: rtp::header::Header {
                                 version: 2,
-                                payload_type: 111, // dynamic PT for Opus
+                                payload_type: 111,
                                 sequence_number,
                                 timestamp,
                                 ..Default::default()
@@ -237,19 +241,31 @@ impl WebRtcManager {
                         };
 
                         if track.write_rtp(&packet).await.is_err() {
+                            info!(
+                                "WebRTC audio pump: write_rtp failed after {} frames",
+                                frames_sent
+                            );
                             break;
                         }
 
-                        // Opus at 48 kHz, 20 ms frames = 960 samples per frame
+                        frames_sent += 1;
+                        if frames_sent % 500 == 0 {
+                            info!("WebRTC audio pump: sent {} frames", frames_sent);
+                        }
+
                         timestamp = timestamp.wrapping_add(960);
                         sequence_number = sequence_number.wrapping_add(1);
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("WebRTC audio pump: broadcast channel closed");
+                        break;
+                    }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        debug!("WebRTC audio lagged by {} frames, skipping", n);
+                        info!("WebRTC audio pump: lagged by {} frames", n);
                     }
                 }
             }
+            info!("WebRTC audio pump exited after {} frames", frames_sent);
         });
 
         self.sessions.insert(
