@@ -266,20 +266,19 @@ impl WebRtcManager {
                 // runtime. Opus encoding is CPU-bound (~0.5-2ms per frame) and
                 // must not delay other async tasks.
                 let enc = Arc::clone(&encoder);
-                let opus_data =
-                    match tokio::task::spawn_blocking(move || {
-                        let mut enc = enc.lock().unwrap();
-                        enc.encode_frame(&pcm_samples)
-                    })
-                    .await
-                    {
-                        Ok(Some(data)) => data,
-                        Ok(None) => continue,
-                        Err(e) => {
-                            error!("Opus encode task panicked: {}", e);
-                            break;
-                        }
-                    };
+                let opus_data = match tokio::task::spawn_blocking(move || {
+                    let mut enc = enc.lock().unwrap();
+                    enc.encode_frame(&pcm_samples)
+                })
+                .await
+                {
+                    Ok(Some(data)) => data,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        error!("Opus encode task panicked: {}", e);
+                        break;
+                    }
+                };
 
                 // Pace: wait for the next 20ms tick before sending. This
                 // prevents packet bursts when the capture delivers multiple
