@@ -171,22 +171,53 @@ pactl list short sinks > "$REPORT_DIR/pa-sinks.txt" 2>/dev/null || true
 pactl list short sources > "$REPORT_DIR/pa-sources.txt" 2>/dev/null || true
 pactl list short modules > "$REPORT_DIR/pa-modules.txt" 2>/dev/null || true
 
-# Check MediaEndpoints (proof that WP BlueZ monitor is active)
-BT_ENDPOINTS=$(busctl --system tree org.bluez 2>/dev/null | grep -c "MediaEndpoint" || echo "0")
-BT_ENDPOINTS=$(echo "$BT_ENDPOINTS" | tr -dc '0-9'); BT_ENDPOINTS=${BT_ENDPOINTS:-0}
+# Check MediaEndpoints — these are registered by WirePlumber's SPA bluez5 plugin
+# on WP's own D-Bus connection, NOT under org.bluez's tree.
+# Detection methods (in order of reliability):
+# 1. Check WP journal for "Registering DBus media endpoint"
+# 2. Check pw-dump for bluez5 device references
+# 3. Check if bluez5.device factory was loaded in pw-dump
 
-if [[ "$BT_ENDPOINTS" -gt 0 ]]; then
-    ok "BlueZ5 A2DP active: $BT_ENDPOINTS MediaEndpoints registered"
-    # Check for connected device audio nodes
-    BT_NODES=$(grep -c "bluez_input\|bluez_source" "$REPORT_DIR/pw-objects.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
-    BT_NODES=${BT_NODES:-0}
-    if [[ "$BT_NODES" -gt 0 ]]; then
-        ok "Bluetooth audio streaming: $BT_NODES nodes"
-    else
-        info "No BT device streaming (connect phone & play audio to activate)"
+BLUEZ5_ACTIVE=false
+
+# Method 1: Check WP journal for endpoint registration (most reliable)
+WP_BT_LOG=$(journalctl --user -u wireplumber --no-pager --since "5 minutes ago" 2>/dev/null | \
+    grep -i "register.*media.*endpoint\|api.bluez5\|bluez.*monitor\|MediaEndpoint" | tail -5 || echo "")
+if echo "$WP_BT_LOG" | grep -qi "register.*media.*endpoint\|MediaEndpoint"; then
+    ok "BlueZ5 A2DP active (MediaEndpoints registered in WP logs)"
+    BLUEZ5_ACTIVE=true
+fi
+
+# Method 2: Check pw-dump for bluez5 references
+if ! $BLUEZ5_ACTIVE; then
+    BLUEZ5_DUMP=$(grep -c "bluez5\|api.bluez5" "$REPORT_DIR/pw-dump.json" 2>/dev/null | tr -dc '0-9' || echo "0")
+    BLUEZ5_DUMP=${BLUEZ5_DUMP:-0}
+    if [[ "$BLUEZ5_DUMP" -gt 0 ]]; then
+        ok "BlueZ5 references in PipeWire dump ($BLUEZ5_DUMP)"
+        BLUEZ5_ACTIVE=true
     fi
+fi
+
+# Method 3: Look for bluez device in wpctl status
+if ! $BLUEZ5_ACTIVE; then
+    if wpctl status 2>/dev/null | grep -qi "bluez"; then
+        ok "BlueZ5 visible in wpctl status"
+        BLUEZ5_ACTIVE=true
+    fi
+fi
+
+if ! $BLUEZ5_ACTIVE; then
+    fail "BlueZ5 monitor not detected — WirePlumber may not have loaded BlueZ integration"
+    info "  Check: journalctl --user -u wireplumber | grep -i bluez"
+fi
+
+# BT audio nodes (only when a device is connected and streaming)
+BT_NODES=$(grep -c "bluez_input\|bluez_source" "$REPORT_DIR/pw-objects.txt" 2>/dev/null | tr -dc '0-9' || echo "0")
+BT_NODES=${BT_NODES:-0}
+if [[ "$BT_NODES" -gt 0 ]]; then
+    ok "Bluetooth audio streaming: $BT_NODES nodes"
 else
-    fail "NO BlueZ5 MediaEndpoints — WirePlumber BlueZ monitor not active"
+    info "No BT device streaming (connect phone & play to activate)"
 fi
 
 # Pipeline
@@ -325,9 +356,10 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 section "Verification"
 
-echo -e "  ${BOLD}$ busctl --system tree org.bluez | grep MediaEndpoint${NC}"
-EP_CHECK=$(busctl --system tree org.bluez 2>/dev/null | grep "MediaEndpoint" || echo "    (none)")
-echo "$EP_CHECK" | head -10 | while IFS= read -r l; do echo "    $l"; done
+echo -e "  ${BOLD}$ journalctl --user -u wireplumber | grep -i 'bluez5\\|MediaEndpoint' (last 5min)${NC}"
+WP_BT_VERIFY=$(journalctl --user -u wireplumber --no-pager --since "5 minutes ago" 2>/dev/null | \
+    grep -iE "bluez5|MediaEndpoint|bluez.*monitor" | tail -5 || echo "    (no bluez entries in WP log)")
+echo "$WP_BT_VERIFY" | while IFS= read -r l; do echo "    $l"; done
 echo ""
 
 echo -e "  ${BOLD}$ pactl get-default-sink${NC}"
@@ -376,7 +408,7 @@ final_status "Bluetooth"             "systemctl is-active bluetooth"
 final_status "SoundSync"             "systemctl is-active soundsync"
 final_status "BT Discoverable"       "bluetoothctl show 2>/dev/null | grep -q 'Discoverable: yes'"
 final_status "libspa-0.2-bluetooth"  "find /usr/lib -path '*/spa-0.2/bluez5' -type d 2>/dev/null | grep -q ."
-final_status "BlueZ5 A2DP endpoints" "busctl --system tree org.bluez 2>/dev/null | grep -q MediaEndpoint"
+final_status "BlueZ5 integration"    "journalctl --user -u wireplumber --no-pager --since '10 minutes ago' 2>/dev/null | grep -qi 'register.*media.*endpoint\|MediaEndpoint\|api.bluez5.enum'"
 final_status "Default sink → SS"     "pactl get-default-sink 2>/dev/null | grep -q soundsync"
 final_status "D-Bus session"         "test -S $XDG_RUNTIME_DIR/bus"
 final_status "PipeWire socket"       "test -S $XDG_RUNTIME_DIR/pipewire-0"
