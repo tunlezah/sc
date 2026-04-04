@@ -97,6 +97,11 @@
 **Root Cause:** The soundsync user has `RTPRIO=0` (no permission to request real-time scheduling). Even though rtkit-daemon is running, PipeWire's RT module cannot escalate because the limits deny it.
 **Rule:** Always configure `/etc/security/limits.d/99-soundsync-rt.conf` with `rtprio 95` and `memlock unlimited` for the audio user. Also add `LimitRTPRIO=95` and `LimitMEMLOCK=infinity` to the systemd service file. Verify with `chrt -p <pid>` after restart.
 
+## Bluetooth Scanning Causes A2DP Audio Stuttering
+**Pattern:** User reports intermittent audio stuttering with low CPU usage. Stopping Bluetooth device scanning instantly fixes the stutter. BT scanning and A2DP audio streaming share the same radio hardware — the adapter must time-division-multiplex between scanning and streaming, causing periodic audio interruptions.
+**Root Cause:** The Bluetooth manager kept scanning indefinitely until the user manually pressed "Stop Scanning" in the UI. No code stopped scanning when audio playback began.
+**Rule:** Auto-stop Bluetooth discovery as soon as any device reaches `AudioActive` state. In the Bluetooth manager's poll loop, check for active audio streams and drop the discovery stream. This is a hardware constraint — no amount of software buffering can fix radio contention.
+
 ## Broadcast Channels Add Timing Jitter to Real-Time Audio
 **Pattern:** SoundSync used a single `parec` → `tokio::sync::broadcast` → N consumer tasks architecture. Every 20ms, the capture task allocates a `Vec<f32>`, converts 7680 bytes of raw PCM, and sends it through the broadcast channel which clones the Vec for each subscriber. Under any allocation pressure or Tokio scheduling delay, the timing between frames becomes irregular, causing audible stuttering in all downstream consumers (WebRTC AND HTTP streams).
 **Evidence:** Both `/api/stream/audio.aac` and `/api/stream/audio.mp3` stuttered identically to WebRTC, proving the problem was upstream in the shared capture → broadcast path, not in WebRTC specifically.
