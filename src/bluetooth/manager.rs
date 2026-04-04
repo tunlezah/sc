@@ -190,11 +190,11 @@ impl BluetoothManager {
 
                     _ = tokio::time::sleep(poll_interval) => {
                         self.poll_device_properties(&adapter).await;
-                        // Auto-stop scanning when a device starts streaming audio.
+                        // Auto-stop scanning when a device connects or starts streaming.
                         // BT scanning and A2DP share the same radio — concurrent
                         // scanning causes audible stuttering in the audio stream.
-                        if discover.is_some() && self.has_audio_active_device().await {
-                            info!("Auto-stopping Bluetooth scan — audio stream active");
+                        if discover.is_some() && self.has_active_connection().await {
+                            info!("Auto-stopping Bluetooth scan — device connected");
                             discover = None;
                             let mut app = self.state.state.write().await;
                             app.bluetooth_status = BluetoothStatus::Ready;
@@ -392,12 +392,20 @@ impl BluetoothManager {
         }
     }
 
-    /// Check if any device is currently in AudioActive state.
-    async fn has_audio_active_device(&self) -> bool {
+    /// Check if any device is currently connected or streaming audio.
+    /// Used to auto-stop scanning — BT scanning and A2DP share the same
+    /// radio, so scanning during active connections causes stuttering.
+    async fn has_active_connection(&self) -> bool {
         let app = self.state.state.read().await;
-        app.devices
-            .values()
-            .any(|d| d.state == DeviceState::AudioActive)
+        app.devices.values().any(|d| {
+            matches!(
+                d.state,
+                DeviceState::Connected
+                    | DeviceState::ProfileNegotiated
+                    | DeviceState::PipewireSourceReady
+                    | DeviceState::AudioActive
+            )
+        })
     }
 
     async fn poll_device_properties(&self, adapter: &bluer::Adapter) {

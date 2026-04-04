@@ -23,6 +23,26 @@ export class WebRTCClient {
     this.audioElement.setAttribute('playsinline', '');
     document.body.appendChild(this.audioElement);
 
+    // Safari requires AudioContext to be created AND resumed within the user
+    // gesture. Do this immediately — before any async work — to "unlock" the
+    // audio output. Keep the context alive so it stays unlocked.
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        await ctx.resume();
+        ctx.close();
+      }
+    } catch {
+      // AudioContext not available — continue without it
+    }
+
+    // Safari: call play() on the audio element NOW, within the user gesture,
+    // even though there's no source yet. This "primes" the element so that
+    // when srcObject is set later (in ontrack), playback starts automatically.
+    // Without this, Safari blocks play() in the async ontrack callback.
+    this.audioElement.play().catch(() => {});
+
     this.pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
@@ -33,21 +53,6 @@ export class WebRTCClient {
         // tracks with streams, so event.streams[0] is undefined.
         const stream = event.streams[0] ?? new MediaStream([event.track]);
         this.audioElement.srcObject = stream;
-
-        // Safari may need an explicit AudioContext resume from the user gesture
-        // chain. Creating a temporary AudioContext and immediately resuming it
-        // "unlocks" audio playback on Safari/iOS even if the gesture has
-        // propagated through async callbacks.
-        try {
-          const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-          if (ctx.state === 'suspended') {
-            ctx.resume().then(() => ctx.close());
-          } else {
-            ctx.close();
-          }
-        } catch {
-          // AudioContext not available — continue without it
-        }
 
         this.audioElement.play().catch((err) => {
           console.warn('WebRTC audio play() failed:', err.message);

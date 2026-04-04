@@ -134,13 +134,53 @@ body {
   50% { opacity: 0.4; }
 }
 
-/* Line-in header toggle */
-.header-line-in {
+/* Theme switcher */
+.theme-switcher {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.theme-btn {
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.theme-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.theme-btn.active {
+  background: var(--primary);
+  color: white;
+}
+
+.theme-btn:hover:not(.active) {
+  background: rgba(100,100,255,0.08);
+}
+
+/* Active audio input indicator in header */
+.header-input-indicator {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 0.75rem;
   color: var(--text-secondary);
+}
+
+.header-input-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
 }
 
 /* Columns */

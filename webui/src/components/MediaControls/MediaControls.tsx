@@ -22,6 +22,7 @@ function formatTime(ms: number): string {
 /** Try to start an HTTP audio stream as fallback when WebRTC is unavailable. */
 function startHttpStream(): HTMLAudioElement {
   const audio = document.createElement('audio');
+  audio.autoplay = true;
   audio.setAttribute('playsinline', '');
   // Safari prefers AAC in ADTS; Chrome handles both.
   // Try AAC first, fall back to MP3 on error.
