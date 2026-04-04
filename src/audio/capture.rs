@@ -202,13 +202,7 @@ fn build_capture_command(source: &CaptureSource) -> Result<(&'static str, Vec<St
                 format!("--channels={}", CHANNELS),
                 format!("--rate={}", SAMPLE_RATE),
                 format!("--device={}", device),
-                // 50ms gives the OS scheduler enough headroom to handle
-                // scheduling jitter without causing buffer underruns. The
-                // previous value of 20ms matched the Opus frame size but left
-                // zero margin — any kernel scheduling delay (even 1-2ms) caused
-                // underruns. PipeWire's quantum can be 21.3ms (1024 samples)
-                // which is already larger than 20ms, guaranteeing underruns.
-                "--latency-msec=50".to_string(),
+                "--latency-msec=20".to_string(),
             ],
         ))
     } else if which_exists("pw-cat") {
