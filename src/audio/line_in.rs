@@ -81,7 +81,7 @@ impl LineInManager {
                 "module-loopback",
                 &format!("source={}", source),
                 &format!("sink={}", NULL_SINK_NAME),
-                "latency_msec=50",
+                "latency_msec=20",
                 "source_dont_move=true",
                 "sink_dont_move=true",
             ])

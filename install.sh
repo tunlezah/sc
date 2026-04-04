@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="2.8.2"
+VERSION="2.8.5"
 VERSION_FILE="${INSTALL_DIR}/.soundsync-version"
 
 # Colors
@@ -499,6 +499,21 @@ ${RUN_USER}  -  nice     -15
 @audio       -  nice     -15
 LIMITSEOF
     log "Configured real-time scheduling limits in ${LIMITS_FILE}"
+
+    # PipeWire runs as a systemd user service which does NOT go through PAM,
+    # so /etc/security/limits.d/ is never applied. Set DefaultLimitRTPRIO in
+    # /etc/systemd/user.conf so PipeWire gets real-time scheduling.
+    local USERCONF="/etc/systemd/user.conf"
+    if ! grep -q "^DefaultLimitRTPRIO=" "$USERCONF" 2>/dev/null; then
+        cat >> "$USERCONF" << 'SYSEOF'
+
+# Real-time scheduling for PipeWire audio (added by SoundSync installer)
+DefaultLimitRTPRIO=95
+DefaultLimitMEMLOCK=infinity
+DefaultLimitNICE=-15
+SYSEOF
+        log "Configured systemd user service RT limits in ${USERCONF}"
+    fi
 
     cat > "${SERVICE_FILE}" << EOF
 [Unit]

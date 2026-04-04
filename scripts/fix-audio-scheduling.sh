@@ -88,17 +88,37 @@ else
     systemctl start rtkit-daemon 2>/dev/null && log "rtkit-daemon started" || warn "Could not start rtkit-daemon"
 fi
 
-# ── Step 3: Update systemd service for PAM limits ─────────────────────
+# ── Step 3: Fix RT limits for systemd user services ───────────────────
 echo ""
-echo "--- Step 3: Check systemd service for PAM support ---"
+echo "--- Step 3: Configure RT limits for systemd user services ---"
+echo ""
+echo "  NOTE: /etc/security/limits.d/ only applies to PAM login sessions."
+echo "  PipeWire runs as a systemd user service which does NOT go through"
+echo "  PAM, so it never sees those limits. We must set DefaultLimitRTPRIO"
+echo "  in /etc/systemd/user.conf for PipeWire to get RT scheduling."
 
-SERVICE_FILES=("/etc/systemd/system/soundsync.service" "/home/$AUDIO_USER/.config/systemd/user/soundsync.service")
+# 3a. Set global defaults for systemd user services
+USERCONF="/etc/systemd/user.conf"
+if grep -q "^DefaultLimitRTPRIO=" "$USERCONF" 2>/dev/null; then
+    log "$USERCONF already has DefaultLimitRTPRIO"
+else
+    cat >> "$USERCONF" << 'SYSEOF'
+
+# Real-time scheduling for PipeWire audio (added by fix-audio-scheduling.sh)
+DefaultLimitRTPRIO=95
+DefaultLimitMEMLOCK=infinity
+DefaultLimitNICE=-15
+SYSEOF
+    log "Added RT limits to $USERCONF"
+fi
+
+# 3b. Also add LimitRTPRIO to the SoundSync system service
+SERVICE_FILES=("/etc/systemd/system/soundsync.service")
 for svc in "${SERVICE_FILES[@]}"; do
     if [ -f "$svc" ]; then
         if grep -q "LimitRTPRIO=" "$svc" 2>/dev/null; then
             log "$svc already has LimitRTPRIO"
         else
-            # Add RT limits directly in the service file
             if grep -q "\[Service\]" "$svc"; then
                 sed -i '/\[Service\]/a LimitRTPRIO=95\nLimitMEMLOCK=infinity\nLimitNICE=-15' "$svc"
                 log "Added RT limits to $svc"
@@ -108,6 +128,15 @@ for svc in "${SERVICE_FILES[@]}"; do
 done
 
 systemctl daemon-reload 2>/dev/null || true
+
+# 3c. Reload systemd user daemon so PipeWire picks up new limits
+if [ -d "/run/user/$AUDIO_UID" ]; then
+    su - "$AUDIO_USER" -s /bin/bash -c "
+        export XDG_RUNTIME_DIR=/run/user/$AUDIO_UID
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$AUDIO_UID/bus
+        systemctl --user daemon-reload 2>/dev/null
+    " && log "systemd user daemon reloaded for $AUDIO_USER" || warn "Could not reload user daemon"
+fi
 
 # ── Step 4: CPU Governor ──────────────────────────────────────────────
 echo ""

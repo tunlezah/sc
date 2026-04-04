@@ -97,6 +97,26 @@
 **Root Cause:** The soundsync user has `RTPRIO=0` (no permission to request real-time scheduling). Even though rtkit-daemon is running, PipeWire's RT module cannot escalate because the limits deny it.
 **Rule:** Always configure `/etc/security/limits.d/99-soundsync-rt.conf` with `rtprio 95` and `memlock unlimited` for the audio user. Also add `LimitRTPRIO=95` and `LimitMEMLOCK=infinity` to the systemd service file. Verify with `chrt -p <pid>` after restart.
 
+## Broadcast Channels Add Timing Jitter to Real-Time Audio
+**Pattern:** SoundSync used a single `parec` → `tokio::sync::broadcast` → N consumer tasks architecture. Every 20ms, the capture task allocates a `Vec<f32>`, converts 7680 bytes of raw PCM, and sends it through the broadcast channel which clones the Vec for each subscriber. Under any allocation pressure or Tokio scheduling delay, the timing between frames becomes irregular, causing audible stuttering in all downstream consumers (WebRTC AND HTTP streams).
+**Evidence:** Both `/api/stream/audio.aac` and `/api/stream/audio.mp3` stuttered identically to WebRTC, proving the problem was upstream in the shared capture → broadcast path, not in WebRTC specifically.
+**Working alternative:** BluetoothA2DP (same machine, same PipeWire) uses direct `parec | ffmpeg` OS pipes per stream client — zero async overhead, zero allocation, kernel-managed buffering. No stuttering.
+**Rule:** For real-time audio streaming to browsers, use direct OS pipe chains (`parec | ffmpeg`) per client. Reserve broadcast channels for non-timing-critical data (spectrum visualization, state events). The kernel's pipe buffering is far more reliable than userspace async channel forwarding for real-time data.
+
+## Never Add an Artificial Pacer on Top of a Naturally-Paced Source
+**Pattern:** parec delivers PCM frames at PipeWire's native rate (~20ms). Adding a `tokio::time::interval(20ms)` pacer on top creates a second unsynchronized clock. When the two clocks drift (which they always do — even by 0.1ms), packets alternate between being sent early and late relative to the previous one, creating a jitter pattern the browser's WebRTC jitter buffer interprets as stuttering.
+**Evidence:** BluetoothA2DP (same machine, same PipeWire, same parec) has zero stuttering because its spectrum analyzer reads frames and processes them immediately — no artificial pacing layer.
+**Rule:** Let the source's natural timing drive packet delivery. parec's `read_exact()` blocks until a full 20ms frame is ready — that IS the pacer. The browser's jitter buffer handles ±2ms of natural scheduling jitter perfectly. A second pacer makes things worse, not better.
+
+## Always Compare with Working Reference Before Assuming OS Issues
+**Pattern:** Spent multiple iterations chasing OS-level RT scheduling (limits.d, systemd user.conf, CPU governor) when another project on the same machine worked fine. The working project (BluetoothA2DP) proved the OS, PipeWire, and parec were all functioning correctly.
+**Rule:** When debugging, first check if a known-working reference exists on the same system. If it does, the problem is in YOUR code, not the OS. Compare architectures to find what's different.
+
+## /etc/security/limits.d/ Does NOT Apply to systemd User Services
+**Pattern:** Setting `rtprio 95` in `/etc/security/limits.d/99-soundsync-rt.conf` and verifying with `ulimit -r` via `sudo -u mark bash` shows 95. But PipeWire (running as `systemctl --user` service) still shows SCHED_OTHER. The `ulimit -r` check passed because `sudo -u` creates a PAM session which applies limits.d. systemd user services do NOT go through PAM.
+**Root Cause:** `/etc/security/limits.d/` is only applied during PAM login sessions (SSH, console login, `sudo -u`). systemd's `--user` manager inherits limits from its parent (`systemd --user` slice), which reads from `/etc/systemd/user.conf`.
+**Rule:** For systemd user services (PipeWire, WirePlumber, pipewire-pulse), RT limits must be set via `DefaultLimitRTPRIO=95` in `/etc/systemd/user.conf`. Both `/etc/security/limits.d/` (for interactive sessions) AND `/etc/systemd/user.conf` (for systemd services) are needed.
+
 ## Child Process Zombies from Synchronous Drop
 **Pattern:** Tokio `Child` processes killed in a synchronous `Drop` implementation with `start_kill()` but never `wait()`-ed become zombies. `Drop` cannot `await`, so the exit status is never reaped.
 **Rule:** In Drop implementations for async child processes, spawn a `tokio::spawn(async move { child.wait().await })` task to reap the child asynchronously. This prevents zombie accumulation across service restarts.

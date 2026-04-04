@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{self, Duration, Instant};
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -200,11 +200,13 @@ impl WebRtcManager {
 
         // Start the audio pump task: subscribe to PCM, encode Opus, write RTP.
         //
-        // Design choices for stutter-free streaming:
-        // 1. Opus encoding runs on a blocking thread (CPU-bound, not async-safe)
-        // 2. RTP timestamps advance correctly when frames are dropped (lag)
-        // 3. Packets are paced at 20ms intervals to prevent burst delivery
-        // 4. Health metrics are logged periodically to detect degradation
+        // Timing: parec delivers PCM frames at PipeWire's native rate (~20ms).
+        // We send RTP packets immediately after encoding — NO artificial pacer.
+        // An artificial pacer creates a second unsynchronized clock that drifts
+        // relative to parec's delivery, causing periodic packet bunching and
+        // gaps that the browser's jitter buffer hears as stuttering.
+        // The browser's WebRTC jitter buffer is designed to handle the small
+        // ±1-2ms timing variations from network and scheduling jitter.
         let track = Arc::clone(&audio_track);
         let mut audio_rx = self.audio_sender.subscribe();
 
@@ -222,12 +224,6 @@ impl WebRtcManager {
             let mut timestamp: u32 = 0;
             let mut sequence_number: u16 = 0;
 
-            // Pacing: send one RTP packet every 20ms to match the Opus frame
-            // duration. This smooths out delivery even if the capture process
-            // delivers PCM in bursts (e.g. OS scheduler delays).
-            let mut pacer = time::interval(Duration::from_millis(20));
-            pacer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
             // Health monitoring: track lag events and frames sent
             let mut total_frames_sent: u64 = 0;
             let mut total_lag_frames: u64 = 0;
@@ -239,7 +235,9 @@ impl WebRtcManager {
             const SAMPLES_PER_FRAME: u32 = 960;
 
             loop {
-                // Wait for next PCM frame from the broadcast channel
+                // Wait for next PCM frame from the broadcast channel.
+                // parec delivers exactly one frame (~20ms) at PipeWire's native
+                // rate — this is our primary timing source.
                 let pcm_samples = match audio_rx.recv().await {
                     Ok(samples) => samples,
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -280,12 +278,9 @@ impl WebRtcManager {
                     }
                 };
 
-                // Pace: wait for the next 20ms tick before sending. This
-                // prevents packet bursts when the capture delivers multiple
-                // frames at once after an OS scheduling delay.
-                pacer.tick().await;
-
-                // Build and send RTP packet
+                // Send RTP packet immediately — no artificial pacing.
+                // parec's read_exact() blocks until a full 20ms frame is
+                // available, providing natural ~20ms spacing between packets.
                 let packet = rtp::packet::Packet {
                     header: rtp::header::Header {
                         version: 2,
