@@ -97,6 +97,12 @@
 **Root Cause:** The soundsync user has `RTPRIO=0` (no permission to request real-time scheduling). Even though rtkit-daemon is running, PipeWire's RT module cannot escalate because the limits deny it.
 **Rule:** Always configure `/etc/security/limits.d/99-soundsync-rt.conf` with `rtprio 95` and `memlock unlimited` for the audio user. Also add `LimitRTPRIO=95` and `LimitMEMLOCK=infinity` to the systemd service file. Verify with `chrt -p <pid>` after restart.
 
+## Broadcast Channels Add Timing Jitter to Real-Time Audio
+**Pattern:** SoundSync used a single `parec` → `tokio::sync::broadcast` → N consumer tasks architecture. Every 20ms, the capture task allocates a `Vec<f32>`, converts 7680 bytes of raw PCM, and sends it through the broadcast channel which clones the Vec for each subscriber. Under any allocation pressure or Tokio scheduling delay, the timing between frames becomes irregular, causing audible stuttering in all downstream consumers (WebRTC AND HTTP streams).
+**Evidence:** Both `/api/stream/audio.aac` and `/api/stream/audio.mp3` stuttered identically to WebRTC, proving the problem was upstream in the shared capture → broadcast path, not in WebRTC specifically.
+**Working alternative:** BluetoothA2DP (same machine, same PipeWire) uses direct `parec | ffmpeg` OS pipes per stream client — zero async overhead, zero allocation, kernel-managed buffering. No stuttering.
+**Rule:** For real-time audio streaming to browsers, use direct OS pipe chains (`parec | ffmpeg`) per client. Reserve broadcast channels for non-timing-critical data (spectrum visualization, state events). The kernel's pipe buffering is far more reliable than userspace async channel forwarding for real-time data.
+
 ## Never Add an Artificial Pacer on Top of a Naturally-Paced Source
 **Pattern:** parec delivers PCM frames at PipeWire's native rate (~20ms). Adding a `tokio::time::interval(20ms)` pacer on top creates a second unsynchronized clock. When the two clocks drift (which they always do — even by 0.1ms), packets alternate between being sent early and late relative to the previous one, creating a jitter pattern the browser's WebRTC jitter buffer interprets as stuttering.
 **Evidence:** BluetoothA2DP (same machine, same PipeWire, same parec) has zero stuttering because its spectrum analyzer reads frames and processes them immediately — no artificial pacing layer.
