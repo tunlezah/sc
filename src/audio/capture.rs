@@ -137,6 +137,11 @@ impl Drop for AudioCapture {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
+            // Spawn a task to reap the child process and prevent zombies.
+            // Drop is synchronous so we cannot await here directly.
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
         }
     }
 }

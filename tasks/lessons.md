@@ -91,3 +91,16 @@
 ## ALWAYS Bump Version on Every Change
 **Pattern:** Deploying code changes without bumping the version number makes it impossible to verify whether a fix is running in production. When a user reports "it's still stuttering," you cannot distinguish between "the fix didn't work" and "the fix isn't deployed."
 **Rule:** Bump the patch version (X.Y.Z+1) on EVERY commit that changes behavior. Update ALL 4 locations: Cargo.toml, webui/package.json, webui/src/version.ts, install.sh.
+
+## Audio Processes at SCHED_OTHER = Guaranteed Stuttering
+**Pattern:** PipeWire, parec, and soundsync all running at `SCHED_OTHER` (normal priority, priority 0). Even with low CPU usage, any system activity (cron, systemd timers, logging, network) can preempt audio threads for 4-10ms, which at 20ms frame boundaries causes audible gaps. The user sees low CPU but hears stuttering.
+**Root Cause:** The soundsync user has `RTPRIO=0` (no permission to request real-time scheduling). Even though rtkit-daemon is running, PipeWire's RT module cannot escalate because the limits deny it.
+**Rule:** Always configure `/etc/security/limits.d/99-soundsync-rt.conf` with `rtprio 95` and `memlock unlimited` for the audio user. Also add `LimitRTPRIO=95` and `LimitMEMLOCK=infinity` to the systemd service file. Verify with `chrt -p <pid>` after restart.
+
+## Child Process Zombies from Synchronous Drop
+**Pattern:** Tokio `Child` processes killed in a synchronous `Drop` implementation with `start_kill()` but never `wait()`-ed become zombies. `Drop` cannot `await`, so the exit status is never reaped.
+**Rule:** In Drop implementations for async child processes, spawn a `tokio::spawn(async move { child.wait().await })` task to reap the child asynchronously. This prevents zombie accumulation across service restarts.
+
+## Stale pipewire-pulse After PipeWire Restart
+**Pattern:** pipewire-pulse running since days ago while pipewire was restarted today. The stale pipewire-pulse has an outdated connection to the old PipeWire instance, causing intermittent audio routing failures.
+**Rule:** Always restart pipewire-pulse and wireplumber together with pipewire. Check start times of all three processes to detect session mismatches.

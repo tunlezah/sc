@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="2.8.1"
+VERSION="2.8.2"
 VERSION_FILE="${INSTALL_DIR}/.soundsync-version"
 
 # Colors
@@ -482,6 +482,24 @@ create_service() {
     # Ensure user is in audio and bluetooth groups
     usermod -aG audio,bluetooth "${RUN_USER}" 2>/dev/null || true
 
+    # Configure real-time scheduling limits for audio processes.
+    # Without these, PipeWire and parec run at SCHED_OTHER (normal priority)
+    # and any system activity can preempt audio threads, causing stuttering.
+    local LIMITS_FILE="/etc/security/limits.d/99-soundsync-rt.conf"
+    cat > "${LIMITS_FILE}" << LIMITSEOF
+# Real-time scheduling limits for SoundSync audio
+# rtprio 95  = allow SCHED_FIFO/SCHED_RR up to priority 95
+# memlock    = prevent audio buffers from being swapped (causes latency)
+# nice -15   = allow higher scheduling priority
+${RUN_USER}  -  rtprio   95
+${RUN_USER}  -  memlock  unlimited
+${RUN_USER}  -  nice     -15
+@audio       -  rtprio   95
+@audio       -  memlock  unlimited
+@audio       -  nice     -15
+LIMITSEOF
+    log "Configured real-time scheduling limits in ${LIMITS_FILE}"
+
     cat > "${SERVICE_FILE}" << EOF
 [Unit]
 Description=SoundSync Bluetooth Audio Receiver
@@ -493,6 +511,10 @@ Type=simple
 User=${RUN_USER}
 Group=audio
 WorkingDirectory=${INSTALL_DIR}
+# Real-time scheduling limits (match /etc/security/limits.d/99-soundsync-rt.conf)
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+LimitNICE=-15
 # Clean up orphaned SoundSync PulseAudio modules before starting.
 # This prevents duplicate null sinks and loopback modules from accumulating
 # across restarts. Safe to run when no modules exist (pactl returns 0).
