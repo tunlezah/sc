@@ -16,7 +16,7 @@ Bluetooth A2DP audio receiver with multi-room casting to AirPlay and Chromecast 
 - **Media Controls** — play, pause, next, previous via AVRCP with track metadata display
 - **Line-In Support** — analog audio input source detection and activation
 - **REST API & WebSocket** — full programmatic control with real-time event streaming
-- **Web UI** — responsive Preact/TypeScript interface with dark mode, Chromecast/AirPlay device management
+- **Web UI** — responsive Preact/TypeScript interface with light/dark/system theme, unified audio input panel, Chromecast/AirPlay device management
 - **Auto-Pairing** — D-Bus Agent1 that accepts pairing requests automatically
 - **Production Ready** — systemd service, install script, CI/CD pipeline
 
@@ -305,6 +305,15 @@ GitHub Actions runs on every push and PR to `main`:
 Download the latest release binary from the [Actions tab](../../actions) artifacts.
 
 ## Changelog
+
+### v2.9.0
+
+- **Fix Safari Audio** — WebRTC audio now works on Safari/iOS by priming the audio element and AudioContext within the user gesture chain, preventing autoplay policy blocks. HTTP AAC fallback also improved with autoplay attribute.
+- **Unified Audio Input Panel** — merged Bluetooth device list and Line-In into a single "Audio Input" section with tabbed interface (Bluetooth / Line In). Removed duplicate Line-In toggle from header and Line-In tab from Audio Output panel. Header now shows active input source indicator.
+- **System Theme Option** — theme selector now offers Light, Dark, and System modes. System mode follows OS preference via `prefers-color-scheme` and reacts to changes without reload. System is the default for new users.
+- **Fix Device Name Persistence** — device name field now properly reflects the backend value on page load instead of always showing "SoundSync". Settings component syncs with state_snapshot updates.
+- **Fix Bluetooth Scan Auto-Stop** — scanning now automatically stops when any device connects (not just when audio becomes active), preventing radio interference between scanning and A2DP streaming.
+- **Fix AirPlay Audio Route** — removed broken `pactl load-module module-raop-sink` call (module doesn't exist in PipeWire). AirPlay now properly waits for PipeWire's RAOP discover module to create sinks automatically, with improved error messages.
 
 ### v2.7.0
 

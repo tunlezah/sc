@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import * as api from '../../api/rest';
 
 interface SettingsProps {
@@ -9,6 +9,15 @@ export function Settings({ deviceName }: SettingsProps) {
   const [name, setName] = useState(deviceName);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const userEdited = useRef(false);
+
+  // Sync local state when the prop changes (e.g. from state_snapshot),
+  // but only if the user hasn't manually edited the field.
+  useEffect(() => {
+    if (!userEdited.current) {
+      setName(deviceName);
+    }
+  }, [deviceName]);
 
   const isDirty = name !== deviceName;
 
@@ -17,6 +26,7 @@ export function Settings({ deviceName }: SettingsProps) {
     setSaving(true);
     try {
       await api.setDeviceName(name.trim());
+      userEdited.current = false;
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } finally {
@@ -36,7 +46,7 @@ export function Settings({ deviceName }: SettingsProps) {
         class="settings-input"
         type="text"
         value={name}
-        onInput={(e) => setName((e.target as HTMLInputElement).value)}
+        onInput={(e) => { userEdited.current = true; setName((e.target as HTMLInputElement).value); }}
         onKeyDown={handleKeyDown}
         placeholder="SoundSync"
         maxLength={64}

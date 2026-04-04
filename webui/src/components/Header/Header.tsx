@@ -1,12 +1,13 @@
 import { VERSION } from '../../version';
-import * as api from '../../api/rest';
+import type { ThemeMode } from '../../hooks/useDarkMode';
 
 interface HeaderProps {
-  dark: boolean;
-  onToggleDark: () => void;
+  themeMode: ThemeMode;
+  onSetTheme: (mode: ThemeMode) => void;
   status: string;
   lineInActive: boolean;
-  lineInAvailable: boolean;
+  activeDevice: string | null;
+  devices: import('../../types').DeviceInfo[];
 }
 
 function statusLabel(status: string): string {
@@ -27,14 +28,14 @@ function statusDotClass(status: string): string {
   return 'header-status-dot';
 }
 
-export function Header({ dark, onToggleDark, status, lineInActive, lineInAvailable }: HeaderProps) {
-  const handleLineInToggle = async () => {
-    if (lineInActive) {
-      await api.deactivateLineIn();
-    } else {
-      await api.activateLineIn();
-    }
-  };
+export function Header({ themeMode, onSetTheme, status, lineInActive, activeDevice, devices }: HeaderProps) {
+  // Determine what the active audio input source is
+  const activeDeviceInfo = activeDevice ? devices.find(d => d.address === activeDevice) : null;
+  const inputLabel = lineInActive
+    ? 'Line In'
+    : activeDeviceInfo
+    ? `BT: ${activeDeviceInfo.name || activeDeviceInfo.address}`
+    : null;
 
   return (
     <header class="header">
@@ -46,13 +47,10 @@ export function Header({ dark, onToggleDark, status, lineInActive, lineInAvailab
         </div>
       </div>
       <div class="header-center">
-        {lineInAvailable && (
-          <div class="header-line-in">
-            <span>Line-In</span>
-            <button
-              class={`toggle toggle-sm ${lineInActive ? 'active' : ''}`}
-              onClick={handleLineInToggle}
-            />
+        {inputLabel && (
+          <div class="header-input-indicator">
+            <span class="header-input-dot" />
+            <span>{inputLabel}</span>
           </div>
         )}
       </div>
@@ -61,9 +59,23 @@ export function Header({ dark, onToggleDark, status, lineInActive, lineInAvailab
           <span class={statusDotClass(status)} />
           <span>{statusLabel(status)}</span>
         </div>
-        <button class="btn-icon" onClick={onToggleDark} title="Toggle dark mode">
-          {dark ? '\u2600' : '\u263D'}
-        </button>
+        <div class="theme-switcher">
+          <button
+            class={`theme-btn ${themeMode === 'light' ? 'active' : ''}`}
+            onClick={() => onSetTheme('light')}
+            title="Light theme"
+          >{'\u2600'}</button>
+          <button
+            class={`theme-btn ${themeMode === 'system' ? 'active' : ''}`}
+            onClick={() => onSetTheme('system')}
+            title="System theme"
+          >{'\u{1F5A5}'}</button>
+          <button
+            class={`theme-btn ${themeMode === 'dark' ? 'active' : ''}`}
+            onClick={() => onSetTheme('dark')}
+            title="Dark theme"
+          >{'\u263D'}</button>
+        </div>
       </div>
     </header>
   );

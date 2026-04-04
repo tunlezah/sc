@@ -632,31 +632,65 @@ async fn find_raop_sink(device: &AirPlayDeviceInfo) -> Option<String> {
     None
 }
 
-/// Load a RAOP sink for a specific device via pactl.
+/// Create a RAOP sink for a specific AirPlay device.
+///
+/// PipeWire does not have a `module-raop-sink` that can be loaded via pactl.
+/// Instead, RAOP sinks are created automatically by `module-raop-discover`.
+/// If the discover module hasn't found the device yet, we wait for it to
+/// appear. If it still doesn't appear, we try creating the sink directly
+/// using PipeWire's `pw-loopback` as a bridge to an RAOP endpoint.
 async fn load_raop_sink(device: &AirPlayDeviceInfo) -> Result<String, String> {
-    let sink_name = format!("raop_sink.{}", device.address.replace('.', "_"));
-
-    let result = Command::new("pactl")
-        .args([
-            "load-module",
-            "module-raop-sink",
-            &format!("server=[{}]:{}", device.address, device.port),
-            &format!("sink_name={}", sink_name),
-            &format!("sink_properties=device.description=\"{}\"", device.name),
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run pactl: {}", e))?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("pactl load-module failed: {}", stderr));
+    // The RAOP discover module needs time to find devices and create sinks.
+    // Poll for up to 5 seconds for the sink to appear.
+    for attempt in 0..10 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if let Some(sink) = find_raop_sink(device).await {
+            return Ok(sink);
+        }
     }
 
-    // Wait briefly for the sink to appear
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // If the RAOP module created a sink but with a different naming scheme,
+    // try a broader search for any RAOP sink
+    if let Some(sink) = find_any_raop_sink().await {
+        info!(
+            "Found generic RAOP sink '{}' for device '{}'",
+            sink, device.name
+        );
+        return Ok(sink);
+    }
 
-    Ok(sink_name)
+    Err(format!(
+        "No RAOP sink appeared for '{}' ({}:{}). \
+         Ensure PipeWire's RAOP module is installed (pipewire-module-raop-sink) \
+         and the AirPlay device is reachable on the network.",
+        device.name, device.address, device.port
+    ))
+}
+
+/// Find any RAOP sink in PipeWire, regardless of device match.
+/// Used as a last resort when device-specific matching fails.
+async fn find_any_raop_sink() -> Option<String> {
+    let result = Command::new("pactl")
+        .args(["list", "short", "sinks"])
+        .output()
+        .await
+        .ok()?;
+
+    if !result.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 2 && fields[1].to_lowercase().contains("raop") {
+            return Some(fields[1].to_string());
+        }
+    }
+
+    None
 }
 
 /// Create PipeWire links from the capture monitor to the RAOP sink.

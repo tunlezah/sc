@@ -1,7 +1,7 @@
 import { useAppState } from './hooks/useAppState';
 import { useDarkMode } from './hooks/useDarkMode';
 import { Header } from './components/Header/Header';
-import { DeviceList } from './components/DeviceList/DeviceList';
+import { AudioInput } from './components/AudioInput/AudioInput';
 import { EQControls } from './components/EQControls/EQControls';
 import { SpectrumVisualizer } from './components/SpectrumVisualizer/SpectrumVisualizer';
 import { MediaControls } from './components/MediaControls/MediaControls';
@@ -10,16 +10,17 @@ import { Settings } from './components/Settings/Settings';
 
 export function App() {
   const { state, spectrum, ws } = useAppState();
-  const [dark, toggleDark] = useDarkMode();
+  const [dark, themeMode, setTheme] = useDarkMode();
 
   return (
     <div class="app-container">
       <Header
-        dark={dark}
-        onToggleDark={toggleDark}
+        themeMode={themeMode}
+        onSetTheme={setTheme}
         status={state.status}
         lineInActive={state.line_in_active}
-        lineInAvailable={state.line_in_available}
+        activeDevice={state.active_device}
+        devices={state.devices}
       />
 
       <div class="left-column">
@@ -39,10 +40,12 @@ export function App() {
       </div>
 
       <div class="right-column">
-        <DeviceList
+        <AudioInput
           devices={state.devices}
           activeDevice={state.active_device}
           status={state.status}
+          lineInActive={state.line_in_active}
+          lineInAvailable={state.line_in_available}
         />
 
         <AudioOutput
@@ -50,8 +53,6 @@ export function App() {
           castActive={state.cast_active}
           airplayDevices={state.airplay_devices}
           airplayActive={state.airplay_active}
-          lineInActive={state.line_in_active}
-          lineInAvailable={state.line_in_available}
         />
 
         <Settings deviceName={state.device_name} />
