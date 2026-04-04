@@ -96,10 +96,7 @@ pub async fn stream_audio_mp3(
     );
 
     if let Some(resp) = try_pipe_stream(&cmd, "audio/mpeg").await {
-        info!(
-            "MP3 stream started (192 kbps, direct pipe from {})",
-            device
-        );
+        info!("MP3 stream started (192 kbps, direct pipe from {})", device);
         return Ok(resp);
     }
 
