@@ -190,6 +190,19 @@ impl BluetoothManager {
 
                     _ = tokio::time::sleep(poll_interval) => {
                         self.poll_device_properties(&adapter).await;
+                        // Auto-stop scanning when a device starts streaming audio.
+                        // BT scanning and A2DP share the same radio — concurrent
+                        // scanning causes audible stuttering in the audio stream.
+                        if discover.is_some() && self.has_audio_active_device().await {
+                            info!("Auto-stopping Bluetooth scan — audio stream active");
+                            discover = None;
+                            let mut app = self.state.state.write().await;
+                            app.bluetooth_status = BluetoothStatus::Ready;
+                            drop(app);
+                            self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                status: BluetoothStatus::Ready,
+                            });
+                        }
                     }
                 }
             } else {
@@ -377,6 +390,14 @@ impl BluetoothManager {
                 }
             }
         }
+    }
+
+    /// Check if any device is currently in AudioActive state.
+    async fn has_audio_active_device(&self) -> bool {
+        let app = self.state.state.read().await;
+        app.devices
+            .values()
+            .any(|d| d.state == DeviceState::AudioActive)
     }
 
     async fn poll_device_properties(&self, adapter: &bluer::Adapter) {
