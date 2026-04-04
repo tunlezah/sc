@@ -661,15 +661,44 @@ async fn load_raop_sink(device: &AirPlayDeviceInfo) -> Result<String, String> {
 
 /// Create PipeWire links from the capture monitor to the RAOP sink.
 /// Links both left and right channels (FL and FR).
+///
+/// Uses `pw-link -o` and `pw-link -i` to discover the actual PipeWire port
+/// names at runtime instead of constructing them from sink names. PipeWire
+/// port names can differ from PulseAudio sink names (e.g. dots vs underscores,
+/// hostname components), so constructed names often fail with "No such file".
 async fn create_pw_links(source_sink: &str, target_sink: &str) -> Result<Vec<String>, String> {
+    // Discover actual output ports from the source sink
+    let source_ports = find_pw_ports("-o", source_sink, "monitor").await?;
+    // Discover actual input ports on the target (RAOP) sink
+    let target_ports = find_pw_ports("-i", target_sink, "playback").await?;
+
+    if source_ports.is_empty() {
+        return Err(format!(
+            "No monitor ports found for '{}'. Check that the null sink exists with: pactl list short sinks",
+            source_sink
+        ));
+    }
+    if target_ports.is_empty() {
+        return Err(format!(
+            "No playback ports found for '{}'. The RAOP sink may not be ready yet. \
+             Check with: pw-link -i | grep raop",
+            target_sink
+        ));
+    }
+
     let mut link_ids = Vec::new();
 
-    // Link left channel: monitor_FL -> playback_FL
-    let channels = [("FL", "FL"), ("FR", "FR")];
+    // Pair ports by channel position: match FL→FL, FR→FR
+    // Fall back to positional pairing if channel suffixes don't match
+    let channel_suffixes = ["FL", "FR"];
+    for suffix in &channel_suffixes {
+        let src = source_ports.iter().find(|p| p.ends_with(suffix));
+        let tgt = target_ports.iter().find(|p| p.ends_with(suffix));
 
-    for (source_ch, target_ch) in &channels {
-        let source_port = format!("{}:monitor_{}", source_sink, source_ch);
-        let target_port = format!("{}:playback_{}", target_sink, target_ch);
+        let (source_port, target_port) = match (src, tgt) {
+            (Some(s), Some(t)) => (s.clone(), t.clone()),
+            _ => continue,
+        };
 
         let result = Command::new("pw-link")
             .args([&source_port, &target_port])
@@ -678,12 +707,10 @@ async fn create_pw_links(source_sink: &str, target_sink: &str) -> Result<Vec<Str
             .map_err(|e| format!("Failed to run pw-link: {}", e))?;
 
         if result.status.success() {
-            // pw-link doesn't return an ID, but we track the port pair for removal
             link_ids.push(format!("{}|{}", source_port, target_port));
             info!("Created PipeWire link: {} -> {}", source_port, target_port);
         } else {
             let stderr = String::from_utf8_lossy(&result.stderr);
-            // If the link already exists, that's fine
             if stderr.contains("already linked") || stderr.contains("File exists") {
                 link_ids.push(format!("{}|{}", source_port, target_port));
                 debug!(
@@ -699,7 +726,82 @@ async fn create_pw_links(source_sink: &str, target_sink: &str) -> Result<Vec<Str
         }
     }
 
+    // If no channel-matched links were created, try positional pairing
+    if link_ids.is_empty() {
+        for (src, tgt) in source_ports.iter().zip(target_ports.iter()) {
+            let result = Command::new("pw-link")
+                .args([src, tgt])
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run pw-link: {}", e))?;
+
+            if result.status.success() {
+                link_ids.push(format!("{}|{}", src, tgt));
+                info!("Created PipeWire link (positional): {} -> {}", src, tgt);
+            } else {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                if stderr.contains("already linked") || stderr.contains("File exists") {
+                    link_ids.push(format!("{}|{}", src, tgt));
+                } else {
+                    return Err(format!("pw-link failed for {} -> {}: {}", src, tgt, stderr));
+                }
+            }
+        }
+    }
+
+    if link_ids.is_empty() {
+        return Err(format!(
+            "No PipeWire links created between '{}' and '{}'",
+            source_sink, target_sink
+        ));
+    }
+
     Ok(link_ids)
+}
+
+/// Find PipeWire ports matching a sink name and port type.
+///
+/// `direction`: "-o" for output ports, "-i" for input ports
+/// `sink_name`: substring to match in port names (e.g. "soundsync-capture", "raop")
+/// `port_type`: "monitor" or "playback" to filter port names
+async fn find_pw_ports(
+    direction: &str,
+    sink_name: &str,
+    port_type: &str,
+) -> Result<Vec<String>, String> {
+    let result = Command::new("pw-link")
+        .arg(direction)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run pw-link {}: {}", direction, e))?;
+
+    if !result.status.success() {
+        return Err(format!(
+            "pw-link {} failed: {}",
+            direction,
+            String::from_utf8_lossy(&result.stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let sink_lower = sink_name.to_lowercase();
+    // Also match with dots replaced by underscores and vice versa
+    let sink_underscore = sink_lower.replace('.', "_");
+    let sink_dot = sink_lower.replace('_', ".");
+
+    let ports: Vec<String> = stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            (lower.contains(&sink_lower)
+                || lower.contains(&sink_underscore)
+                || lower.contains(&sink_dot))
+                && lower.contains(port_type)
+        })
+        .collect();
+
+    Ok(ports)
 }
 
 /// Remove a PipeWire link by its ID (source_port|target_port).
