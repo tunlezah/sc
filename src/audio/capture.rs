@@ -26,7 +26,12 @@ const BYTES_PER_FRAME: usize = SAMPLES_PER_FRAME * 4; // f32 = 4 bytes
 
 impl AudioCapture {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(64);
+        // 256 frames × 20ms = 5.12 seconds of buffer. This must be large
+        // enough to absorb temporary slowdowns from ANY subscriber (WebRTC
+        // encoder, spectrum FFT, HTTP stream encoder). A capacity of 64
+        // (1.28s) was too small — when any consumer falls behind by ~1s, ALL
+        // consumers see Lagged errors, causing audible stuttering in WebRTC.
+        let (tx, _) = broadcast::channel(256);
         Self {
             sender: tx,
             child: None,
@@ -192,7 +197,13 @@ fn build_capture_command(source: &CaptureSource) -> Result<(&'static str, Vec<St
                 format!("--channels={}", CHANNELS),
                 format!("--rate={}", SAMPLE_RATE),
                 format!("--device={}", device),
-                "--latency-msec=20".to_string(),
+                // 50ms gives the OS scheduler enough headroom to handle
+                // scheduling jitter without causing buffer underruns. The
+                // previous value of 20ms matched the Opus frame size but left
+                // zero margin — any kernel scheduling delay (even 1-2ms) caused
+                // underruns. PipeWire's quantum can be 21.3ms (1024 samples)
+                // which is already larger than 20ms, guaranteeing underruns.
+                "--latency-msec=50".to_string(),
             ],
         ))
     } else if which_exists("pw-cat") {
