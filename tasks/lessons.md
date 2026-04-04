@@ -79,3 +79,15 @@
 ## CPU-Bound Work Must Not Run on Tokio Async Threads
 **Pattern:** Opus encoding (`encode_float`) takes 0.5-2ms per 20ms frame. Running this synchronously inside a `tokio::spawn` task blocks the async runtime thread, delaying all other async work on that thread (including other WebRTC sessions, WebSocket messages, and HTTP requests).
 **Rule:** Use `tokio::task::spawn_blocking` for CPU-bound audio encoding. Wrap the encoder in `Arc<Mutex>` for cross-thread access. This keeps the async runtime responsive and prevents cascading latency spikes.
+
+## Broadcast Channel Capacity Must Account for Slowest Consumer
+**Pattern:** A broadcast channel with capacity 64 (1.28 seconds at 20ms/frame) causes all subscribers to receive `Lagged` errors when ANY single consumer falls behind. The spectrum analyzer doing FFT, HTTP stream encoders, or a briefly delayed WebRTC pump can trigger lag for everyone. This causes frame drops and stuttering even when CPU usage is low.
+**Rule:** Size broadcast channels for at least 5 seconds of buffering (256+ frames at 20ms). The cost is minimal (~1.8 MB for 256 × 7680 bytes) but prevents cascade lag from slow consumers.
+
+## parec --latency-msec Must Exceed PipeWire Quantum
+**Pattern:** `parec --latency-msec=20` requests a 20ms internal buffer in parec. But PipeWire's quantum (buffer processing size) defaults to 1024 samples at 48 kHz = 21.3ms. If the quantum exceeds parec's buffer, parec cannot hold a full processing cycle, causing buffer underruns that are silent at the system level but produce audible gaps.
+**Rule:** Set parec latency to at least 2× the expected PipeWire quantum. 50ms is safe for all common quantum sizes (256, 512, 1024, 2048).
+
+## ALWAYS Bump Version on Every Change
+**Pattern:** Deploying code changes without bumping the version number makes it impossible to verify whether a fix is running in production. When a user reports "it's still stuttering," you cannot distinguish between "the fix didn't work" and "the fix isn't deployed."
+**Rule:** Bump the patch version (X.Y.Z+1) on EVERY commit that changes behavior. Update ALL 4 locations: Cargo.toml, webui/package.json, webui/src/version.ts, install.sh.
