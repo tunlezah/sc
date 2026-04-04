@@ -3,7 +3,7 @@ use axum::http::{header, StatusCode};
 use axum::response::Response;
 use futures::stream;
 use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tracing::{info, warn};
 
 /// Resolve the capture device for direct parec streaming.
