@@ -97,6 +97,11 @@
 **Root Cause:** The soundsync user has `RTPRIO=0` (no permission to request real-time scheduling). Even though rtkit-daemon is running, PipeWire's RT module cannot escalate because the limits deny it.
 **Rule:** Always configure `/etc/security/limits.d/99-soundsync-rt.conf` with `rtprio 95` and `memlock unlimited` for the audio user. Also add `LimitRTPRIO=95` and `LimitMEMLOCK=infinity` to the systemd service file. Verify with `chrt -p <pid>` after restart.
 
+## /etc/security/limits.d/ Does NOT Apply to systemd User Services
+**Pattern:** Setting `rtprio 95` in `/etc/security/limits.d/99-soundsync-rt.conf` and verifying with `ulimit -r` via `sudo -u mark bash` shows 95. But PipeWire (running as `systemctl --user` service) still shows SCHED_OTHER. The `ulimit -r` check passed because `sudo -u` creates a PAM session which applies limits.d. systemd user services do NOT go through PAM.
+**Root Cause:** `/etc/security/limits.d/` is only applied during PAM login sessions (SSH, console login, `sudo -u`). systemd's `--user` manager inherits limits from its parent (`systemd --user` slice), which reads from `/etc/systemd/user.conf`.
+**Rule:** For systemd user services (PipeWire, WirePlumber, pipewire-pulse), RT limits must be set via `DefaultLimitRTPRIO=95` in `/etc/systemd/user.conf`. Both `/etc/security/limits.d/` (for interactive sessions) AND `/etc/systemd/user.conf` (for systemd services) are needed.
+
 ## Child Process Zombies from Synchronous Drop
 **Pattern:** Tokio `Child` processes killed in a synchronous `Drop` implementation with `start_kill()` but never `wait()`-ed become zombies. `Drop` cannot `await`, so the exit status is never reaped.
 **Rule:** In Drop implementations for async child processes, spawn a `tokio::spawn(async move { child.wait().await })` task to reap the child asynchronously. This prevents zombie accumulation across service restarts.
