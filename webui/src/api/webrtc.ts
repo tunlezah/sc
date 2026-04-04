@@ -33,8 +33,31 @@ export class WebRTCClient {
         // tracks with streams, so event.streams[0] is undefined.
         const stream = event.streams[0] ?? new MediaStream([event.track]);
         this.audioElement.srcObject = stream;
-        this.audioElement.play().catch(() => {
-          // autoplay may be blocked — user can tap the element
+
+        // Safari may need an explicit AudioContext resume from the user gesture
+        // chain. Creating a temporary AudioContext and immediately resuming it
+        // "unlocks" audio playback on Safari/iOS even if the gesture has
+        // propagated through async callbacks.
+        try {
+          const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          if (ctx.state === 'suspended') {
+            ctx.resume().then(() => ctx.close());
+          } else {
+            ctx.close();
+          }
+        } catch {
+          // AudioContext not available — continue without it
+        }
+
+        this.audioElement.play().catch((err) => {
+          console.warn('WebRTC audio play() failed:', err.message);
+          // On Safari, try toggling muted state to unlock playback
+          if (this.audioElement) {
+            this.audioElement.muted = true;
+            this.audioElement.play().then(() => {
+              if (this.audioElement) this.audioElement.muted = false;
+            }).catch(() => {});
+          }
         });
       }
       this.onStateChange(true);
