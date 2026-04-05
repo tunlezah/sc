@@ -4,6 +4,26 @@ use crate::bluetooth::constants::{A2DP_SINK_UUID, A2DP_SOURCE_UUID, BLUEZ_NODE_P
 use crate::bluetooth::device::{DeviceInfo, DeviceState};
 use crate::state::{AppStateHandle, SystemEvent};
 
+/// Check if a string looks like a MAC address (colon or dash separated).
+/// BlueZ returns `XX-XX-XX-XX-XX-XX` as the alias when no friendly name is known,
+/// while our internal addresses use `XX:XX:XX:XX:XX:XX`.
+pub fn is_mac_address(s: &str) -> bool {
+    // Must be exactly 17 chars: 6 hex pairs separated by colons or dashes
+    if s.len() != 17 {
+        return false;
+    }
+    let sep = if s.contains(':') {
+        ':'
+    } else if s.contains('-') {
+        '-'
+    } else {
+        return false;
+    };
+    s.split(sep).count() == 6
+        && s.split(sep)
+            .all(|part| part.len() == 2 && part.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// Check if a set of UUIDs contains A2DP-related profiles.
 pub fn has_a2dp_uuid(uuids: &[String]) -> bool {
     uuids.iter().any(|u| {
@@ -144,6 +164,21 @@ mod tests {
             "00001101-0000-1000-8000-00805f9b34fb".to_string()
         ]));
         assert!(!has_a2dp_uuid(&[]));
+    }
+
+    #[test]
+    fn test_is_mac_address() {
+        // Colon-separated (our internal format)
+        assert!(is_mac_address("AA:BB:CC:DD:EE:FF"));
+        assert!(is_mac_address("7C:24:37:AF:9E:DF"));
+        // Dash-separated (BlueZ alias fallback format)
+        assert!(is_mac_address("AA-BB-CC-DD-EE-FF"));
+        assert!(is_mac_address("7C-24-37-AF-9E-DF"));
+        // Not MAC addresses
+        assert!(!is_mac_address("iPhone"));
+        assert!(!is_mac_address("Living Room Speaker"));
+        assert!(!is_mac_address(""));
+        assert!(!is_mac_address("ZZ:ZZ:ZZ:ZZ:ZZ:ZZ"));
     }
 
     #[test]

@@ -258,7 +258,12 @@ impl BluetoothManager {
         match event {
             bluer::AdapterEvent::DeviceAdded(addr) => match adapter.device(addr) {
                 Ok(device) => {
-                    let name = device.alias().await.unwrap_or_else(|_| addr.to_string());
+                    let alias = device.alias().await.unwrap_or_default();
+                    let name = if discovery::is_mac_address(&alias) {
+                        String::new()
+                    } else {
+                        alias
+                    };
                     let rssi = device.rssi().await.ok().flatten();
                     let uuids: Vec<String> = device
                         .uuids()
@@ -430,7 +435,7 @@ impl BluetoothManager {
                     // resolves after the initial DeviceAdded signal.
                     if let Some(ref name) = current_name {
                         if let Ok(alias) = device.alias().await {
-                            if alias != *name && alias != address {
+                            if !discovery::is_mac_address(&alias) && alias != *name {
                                 discovery::update_device_name(&self.state, &address, alias).await;
                             }
                         }
