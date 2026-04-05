@@ -143,6 +143,10 @@ export function useAppState() {
         case 'air_play_error':
           console.error('AirPlay error:', msg.data.message);
           break;
+
+        case 'line_in_changed':
+          setState((prev) => ({ ...prev, line_in_active: msg.data.active }));
+          break;
       }
     });
 

@@ -243,4 +243,91 @@ mod tests {
         let event = rx.try_recv().unwrap();
         assert!(matches!(event, SystemEvent::DeviceStateChanged { .. }));
     }
+
+    #[tokio::test]
+    async fn test_empty_name_does_not_overwrite_existing() {
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        // First discovery with a real name
+        handle_device_discovered(
+            &state,
+            "AA:BB:CC:DD:EE:FF".into(),
+            "MyPhone".into(),
+            Some(-40),
+            vec![],
+        )
+        .await;
+
+        // Second discovery with empty name (MAC alias detected)
+        handle_device_discovered(
+            &state,
+            "AA:BB:CC:DD:EE:FF".into(),
+            "".into(),
+            Some(-50),
+            vec![],
+        )
+        .await;
+
+        let app = state.state.read().await;
+        let dev = app.devices.get("AA:BB:CC:DD:EE:FF").unwrap();
+        // Name must be preserved, not overwritten with empty
+        assert_eq!(dev.name, "MyPhone");
+        // RSSI should still update
+        assert_eq!(dev.rssi, Some(-50));
+    }
+
+    #[tokio::test]
+    async fn test_discovered_event_sends_resolved_name() {
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        // First: device known with a name
+        handle_device_discovered(
+            &state,
+            "AA:BB:CC:DD:EE:FF".into(),
+            "Speaker".into(),
+            None,
+            vec![],
+        )
+        .await;
+
+        let mut rx = state.subscribe();
+
+        // Re-discovered with empty name
+        handle_device_discovered(&state, "AA:BB:CC:DD:EE:FF".into(), "".into(), None, vec![]).await;
+
+        let event = rx.try_recv().unwrap();
+        // The event should carry the resolved name "Speaker", not ""
+        match event {
+            SystemEvent::DeviceDiscovered { name, .. } => {
+                assert_eq!(name, "Speaker");
+            }
+            _ => panic!("Expected DeviceDiscovered event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_device_name() {
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        // Add a device with empty name
+        handle_device_discovered(&state, "AA:BB:CC:DD:EE:FF".into(), "".into(), None, vec![]).await;
+
+        let mut rx = state.subscribe();
+
+        // Name resolves later
+        update_device_name(&state, "AA:BB:CC:DD:EE:FF", "Living Room Speaker".into()).await;
+
+        let app = state.state.read().await;
+        let dev = app.devices.get("AA:BB:CC:DD:EE:FF").unwrap();
+        assert_eq!(dev.name, "Living Room Speaker");
+        drop(app);
+
+        let event = rx.try_recv().unwrap();
+        match event {
+            SystemEvent::DeviceStateChanged { name, .. } => {
+                assert_eq!(name, "Living Room Speaker");
+            }
+            _ => panic!("Expected DeviceStateChanged event"),
+        }
+    }
 }
