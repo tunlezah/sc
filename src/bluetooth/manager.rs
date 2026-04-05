@@ -193,8 +193,8 @@ impl BluetoothManager {
                         // Auto-stop scanning when a device connects or starts streaming.
                         // BT scanning and A2DP share the same radio — concurrent
                         // scanning causes audible stuttering in the audio stream.
-                        if discover.is_some() && self.has_active_connection().await {
-                            info!("Auto-stopping Bluetooth scan — device connected");
+                        if discover.is_some() && self.has_active_audio_stream().await {
+                            info!("Auto-stopping Bluetooth scan — audio stream active");
                             discover = None;
                             let mut app = self.state.state.write().await;
                             app.bluetooth_status = BluetoothStatus::Ready;
@@ -259,7 +259,7 @@ impl BluetoothManager {
             bluer::AdapterEvent::DeviceAdded(addr) => match adapter.device(addr) {
                 Ok(device) => {
                     let alias = device.alias().await.unwrap_or_default();
-                    let name = if discovery::is_mac_address(&alias) {
+                    let name = if alias.is_empty() || discovery::is_mac_address(&alias) {
                         String::new()
                     } else {
                         alias
@@ -397,20 +397,16 @@ impl BluetoothManager {
         }
     }
 
-    /// Check if any device is currently connected or streaming audio.
+    /// Check if any device is actively streaming audio.
     /// Used to auto-stop scanning — BT scanning and A2DP share the same
-    /// radio, so scanning during active connections causes stuttering.
-    async fn has_active_connection(&self) -> bool {
+    /// radio, so concurrent scanning causes audible stuttering.
+    /// Only triggers on AudioActive (actual streaming), not merely Connected,
+    /// since pre-existing connections shouldn't prevent the user from scanning.
+    async fn has_active_audio_stream(&self) -> bool {
         let app = self.state.state.read().await;
-        app.devices.values().any(|d| {
-            matches!(
-                d.state,
-                DeviceState::Connected
-                    | DeviceState::ProfileNegotiated
-                    | DeviceState::PipewireSourceReady
-                    | DeviceState::AudioActive
-            )
-        })
+        app.devices
+            .values()
+            .any(|d| d.state == DeviceState::AudioActive)
     }
 
     async fn poll_device_properties(&self, adapter: &bluer::Adapter) {
