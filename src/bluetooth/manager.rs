@@ -259,7 +259,7 @@ impl BluetoothManager {
             bluer::AdapterEvent::DeviceAdded(addr) => match adapter.device(addr) {
                 Ok(device) => {
                     let alias = device.alias().await.unwrap_or_default();
-                    let name = if discovery::is_mac_address(&alias) {
+                    let name = if alias.is_empty() || discovery::is_mac_address(&alias) {
                         String::new()
                     } else {
                         alias

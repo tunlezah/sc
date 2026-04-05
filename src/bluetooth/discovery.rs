@@ -56,16 +56,23 @@ pub async fn handle_device_discovered(
         .entry(address.clone())
         .or_insert_with(|| DeviceInfo::new(address.clone(), name.clone()));
 
-    device.name = name.clone();
+    // Only update name if the new value is non-empty — an empty name means
+    // BlueZ hasn't resolved the friendly name yet and we don't want to
+    // overwrite a previously known name.
+    if !name.is_empty() {
+        device.name = name.clone();
+    }
     device.rssi = rssi;
     device.has_a2dp = has_a2dp;
     device.last_seen = chrono::Utc::now();
+
+    let resolved_name = device.name.clone();
 
     drop(app);
 
     state.publish(SystemEvent::DeviceDiscovered {
         address,
-        name,
+        name: resolved_name,
         rssi,
     });
 }
