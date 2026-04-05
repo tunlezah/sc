@@ -55,7 +55,10 @@ pub async fn update_device_name(state: &AppStateHandle, address: &str, name: Str
     let mut app = state.state.write().await;
     if let Some(device) = app.devices.get_mut(address) {
         if device.name != name {
-            info!("Device {} name resolved: '{}' → '{}'", address, device.name, name);
+            info!(
+                "Device {} name resolved: '{}' → '{}'",
+                address, device.name, name
+            );
             device.name = name.clone();
             let device_state = device.state.clone();
             drop(app);
