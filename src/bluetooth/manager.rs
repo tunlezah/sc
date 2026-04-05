@@ -418,10 +418,28 @@ impl BluetoothManager {
             if let Ok(addr) = address.parse() {
                 if let Ok(device) = adapter.device(addr) {
                     let connected = device.is_connected().await.unwrap_or(false);
-                    let current_state = {
+                    let (current_state, current_name) = {
                         let app = self.state.state.read().await;
-                        app.devices.get(&address).map(|d| d.state.clone())
+                        app.devices
+                            .get(&address)
+                            .map(|d| (d.state.clone(), d.name.clone()))
+                            .unzip()
                     };
+
+                    // Re-read device alias to pick up names that BlueZ
+                    // resolves after the initial DeviceAdded signal.
+                    if let Some(ref name) = current_name {
+                        if let Ok(alias) = device.alias().await {
+                            if alias != *name && alias != address {
+                                discovery::update_device_name(
+                                    &self.state,
+                                    &address,
+                                    alias,
+                                )
+                                .await;
+                            }
+                        }
+                    }
 
                     if let Some(state) = current_state {
                         if connected && state == DeviceState::Discovered {

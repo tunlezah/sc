@@ -50,6 +50,25 @@ pub async fn handle_device_discovered(
     });
 }
 
+/// Update a device's display name and notify the frontend.
+pub async fn update_device_name(state: &AppStateHandle, address: &str, name: String) {
+    let mut app = state.state.write().await;
+    if let Some(device) = app.devices.get_mut(address) {
+        if device.name != name {
+            info!("Device {} name resolved: '{}' → '{}'", address, device.name, name);
+            device.name = name.clone();
+            let device_state = device.state.clone();
+            drop(app);
+
+            state.publish(SystemEvent::DeviceStateChanged {
+                address: address.to_string(),
+                name,
+                state: device_state,
+            });
+        }
+    }
+}
+
 /// Update device state and emit appropriate events.
 pub async fn update_device_state(state: &AppStateHandle, address: &str, new_state: DeviceState) {
     let mut app = state.state.write().await;
