@@ -431,12 +431,7 @@ impl BluetoothManager {
                     if let Some(ref name) = current_name {
                         if let Ok(alias) = device.alias().await {
                             if alias != *name && alias != address {
-                                discovery::update_device_name(
-                                    &self.state,
-                                    &address,
-                                    alias,
-                                )
-                                .await;
+                                discovery::update_device_name(&self.state, &address, alias).await;
                             }
                         }
                     }
