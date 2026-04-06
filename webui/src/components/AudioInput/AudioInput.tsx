@@ -36,9 +36,11 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
 
   const handleScan = () => {
     if (status === 'scanning') {
-      api.stopScan();
+      api.stopScan().catch(() => {});
     } else {
-      api.startScan();
+      api.startScan().catch((err) => {
+        console.error('Scan request failed:', err);
+      });
     }
   };
 
@@ -93,6 +95,11 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
               <button class="btn btn-sm btn-primary" onClick={handleScan}>
                 {status === 'scanning' ? 'Stop Scan' : 'Scan'}
               </button>
+              {status.startsWith('error') && (
+                <span class="badge badge-disconnected" style={{ marginLeft: '8px', fontSize: '0.7rem' }}>
+                  {status.replace('error:', '')}
+                </span>
+              )}
             </div>
 
             {devices.length > 0 && (

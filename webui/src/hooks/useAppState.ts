@@ -29,9 +29,15 @@ export function useAppState() {
 
     ws.onMessage((msg: WsMessage) => {
       switch (msg.type) {
-        case 'state_snapshot':
-          setState(msg.data);
+        case 'state_snapshot': {
+          // Normalize status: BluetoothStatus::Error serializes as {"error":"msg"}
+          const snapshot = { ...msg.data };
+          if (typeof snapshot.status === 'object' && snapshot.status !== null) {
+            snapshot.status = `error:${(snapshot.status as unknown as { error: string }).error}`;
+          }
+          setState(snapshot);
           break;
+        }
 
         case 'device_state_changed':
           setState((prev) => {
@@ -74,9 +80,15 @@ export function useAppState() {
           setSpectrum(msg.data.bands);
           break;
 
-        case 'bluetooth_status_changed':
-          setState((prev) => ({ ...prev, status: msg.data.status }));
+        case 'bluetooth_status_changed': {
+          // BluetoothStatus::Error serializes as {"error":"msg"} — normalize to string
+          const rawStatus = msg.data.status;
+          const status = typeof rawStatus === 'object' && rawStatus !== null
+            ? `error:${(rawStatus as { error: string }).error}`
+            : rawStatus;
+          setState((prev) => ({ ...prev, status }));
           break;
+        }
 
         // Chromecast events
         case 'cast_device_discovered':

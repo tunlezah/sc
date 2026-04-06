@@ -190,7 +190,7 @@ impl BluetoothManager {
 
                     _ = tokio::time::sleep(poll_interval) => {
                         self.poll_device_properties(&adapter).await;
-                        // Auto-stop scanning when a device connects or starts streaming.
+                        // Auto-stop scanning when a device is actively streaming audio.
                         // BT scanning and A2DP share the same radio — concurrent
                         // scanning causes audible stuttering in the audio stream.
                         if discover.is_some() && self.has_active_audio_stream().await {
@@ -223,8 +223,15 @@ impl BluetoothManager {
                                     }
                                     Err(e) => {
                                         error!("Failed to start discovery: {}", e);
-                                        self.state.publish(SystemEvent::Error {
-                                            message: format!("Discovery failed: {}", e),
+                                        let mut app = self.state.state.write().await;
+                                        app.bluetooth_status = BluetoothStatus::Error(
+                                            format!("Discovery failed: {}", e),
+                                        );
+                                        drop(app);
+                                        self.state.publish(SystemEvent::BluetoothStatusChanged {
+                                            status: BluetoothStatus::Error(
+                                                format!("Discovery failed: {}", e),
+                                            ),
                                         });
                                     }
                                 }
