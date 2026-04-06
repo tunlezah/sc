@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="2.9.1"
+VERSION="2.9.2"
 VERSION_FILE="${INSTALL_DIR}/.soundsync-version"
 
 # Colors

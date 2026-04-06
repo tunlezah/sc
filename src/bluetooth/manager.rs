@@ -211,16 +211,7 @@ impl BluetoothManager {
                         match cmd {
                             Some(BluetoothCommand::StartScan) => {
                                 info!("Starting Bluetooth discovery");
-                                // If BlueZ is already discovering (stale from a previous
-                                // session or crash), stop it first so we can start fresh.
-                                if adapter.is_discovering().await.unwrap_or(false) {
-                                    warn!("BlueZ already discovering — stopping stale session");
-                                    stop_stale_discovery(&connection, &adapter_name).await;
-                                    // Brief pause to let BlueZ finish cleanup
-                                    tokio::time::sleep(std::time::Duration::from_millis(200))
-                                        .await;
-                                }
-                                match adapter.discover_devices().await {
+                                match start_discovery(&adapter, &adapter_name).await {
                                     Ok(stream) => {
                                         discover = Some(Box::pin(stream));
                                         let mut app = self.state.state.write().await;
@@ -536,27 +527,72 @@ fn extract_address_from_bt_source(source: &str) -> Option<String> {
     }
 }
 
-/// Stop a stale BlueZ discovery session via D-Bus.
+/// Start Bluetooth discovery, clearing stale BlueZ state if necessary.
 ///
-/// BlueZ keeps the adapter in "discovering" state if a previous process
-/// started discovery but crashed or exited without calling StopDiscovery.
-/// The `bluer` crate's `discover_devices()` calls StartDiscovery, which
-/// fails with "Operation already in progress" in this case.
-async fn stop_stale_discovery(connection: &zbus::Connection, adapter_name: &str) {
-    let path: zbus::zvariant::OwnedObjectPath =
-        format!("/org/bluez/{}", adapter_name).try_into().unwrap();
-    let result: Result<(), zbus::Error> = connection
-        .call_method(
-            Some("org.bluez"),
-            &path,
-            Some("org.bluez.Adapter1"),
-            "StopDiscovery",
-            &(),
-        )
-        .await
-        .map(|_| ());
-    match result {
-        Ok(()) => info!("Stopped stale BlueZ discovery session"),
-        Err(e) => warn!("Failed to stop stale discovery: {}", e),
+/// BlueZ returns "Operation already in progress" if a previous discovery
+/// session wasn't cleanly stopped (crash, unclean shutdown, or another
+/// process). This function detects that case and recovers by:
+/// 1. Calling `StopDiscovery` via busctl (separate D-Bus client)
+/// 2. If that fails, power-cycling the adapter as a last resort
+async fn start_discovery(
+    adapter: &bluer::Adapter,
+    adapter_name: &str,
+) -> bluer::Result<impl futures::Stream<Item = bluer::AdapterEvent>> {
+    match adapter.discover_devices().await {
+        Ok(stream) => return Ok(stream),
+        Err(e) => {
+            let msg = e.to_string();
+            if !msg.contains("already in progress") && !msg.contains("InProgress") {
+                return Err(e);
+            }
+            warn!("Discovery already in progress — clearing stale BlueZ session");
+        }
     }
+
+    // Try busctl StopDiscovery (runs as a separate D-Bus client, so
+    // BlueZ accepts it even though we aren't the session that started it)
+    let dbus_path = format!("/org/bluez/{}", adapter_name);
+    let stop_result = tokio::process::Command::new("busctl")
+        .args([
+            "call",
+            "org.bluez",
+            &dbus_path,
+            "org.bluez.Adapter1",
+            "StopDiscovery",
+        ])
+        .output()
+        .await;
+    match &stop_result {
+        Ok(out) if out.status.success() => {
+            info!("Stopped stale discovery via busctl");
+        }
+        Ok(out) => {
+            warn!(
+                "busctl StopDiscovery failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Err(e) => warn!("Failed to run busctl: {}", e),
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Retry after stopping
+    match adapter.discover_devices().await {
+        Ok(stream) => return Ok(stream),
+        Err(e) => {
+            warn!(
+                "Discovery still failing after StopDiscovery — power-cycling adapter: {}",
+                e
+            );
+        }
+    }
+
+    // Last resort: power-cycle the adapter to reset all BlueZ state
+    let _ = adapter.set_powered(false).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let _ = adapter.set_powered(true).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    adapter.discover_devices().await
 }
