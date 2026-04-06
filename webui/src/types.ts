@@ -99,4 +99,5 @@ export type WsMessage =
   | { type: 'air_play_device_removed'; data: { device_name: string } }
   | { type: 'air_play_session_started'; data: AirPlayDevice }
   | { type: 'air_play_session_stopped'; data: { device_name: string } }
-  | { type: 'air_play_error'; data: { message: string } };
+  | { type: 'air_play_error'; data: { message: string } }
+  | { type: 'line_in_changed'; data: { active: boolean } };

@@ -272,6 +272,12 @@ fn event_to_ws_message(event: &SystemEvent, ws_session_id: &str) -> Option<WsOut
                 message: message.clone(),
             },
         }),
+        SystemEvent::LineInActivated => Some(WsOutMessage::LineInChanged {
+            data: LineInData { active: true },
+        }),
+        SystemEvent::LineInDeactivated => Some(WsOutMessage::LineInChanged {
+            data: LineInData { active: false },
+        }),
         _ => None,
     }
 }
@@ -338,6 +344,14 @@ enum WsOutMessage {
     AirPlayError {
         data: ErrorData,
     },
+    LineInChanged {
+        data: LineInData,
+    },
+}
+
+#[derive(Serialize)]
+struct LineInData {
+    active: bool,
 }
 
 #[derive(Serialize)]
@@ -420,4 +434,59 @@ struct WsIceCandidateData {
     sdp_mid: Option<String>,
     #[serde(rename = "sdpMLineIndex")]
     sdp_mline_index: Option<u16>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::SystemEvent;
+
+    #[test]
+    fn test_line_in_activated_produces_ws_message() {
+        let msg = event_to_ws_message(&SystemEvent::LineInActivated, "test-session");
+        assert!(msg.is_some());
+        let json = serde_json::to_string(&msg.unwrap()).unwrap();
+        assert!(json.contains("\"type\":\"line_in_changed\""));
+        assert!(json.contains("\"active\":true"));
+    }
+
+    #[test]
+    fn test_line_in_deactivated_produces_ws_message() {
+        let msg = event_to_ws_message(&SystemEvent::LineInDeactivated, "test-session");
+        assert!(msg.is_some());
+        let json = serde_json::to_string(&msg.unwrap()).unwrap();
+        assert!(json.contains("\"type\":\"line_in_changed\""));
+        assert!(json.contains("\"active\":false"));
+    }
+
+    #[test]
+    fn test_bluetooth_scanning_status_produces_ws_message() {
+        let msg = event_to_ws_message(
+            &SystemEvent::BluetoothStatusChanged {
+                status: crate::state::BluetoothStatus::Scanning,
+            },
+            "test-session",
+        );
+        assert!(msg.is_some());
+        let json = serde_json::to_string(&msg.unwrap()).unwrap();
+        assert!(json.contains("\"type\":\"bluetooth_status_changed\""));
+        assert!(json.contains("\"scanning\""));
+    }
+
+    #[test]
+    fn test_device_discovered_produces_ws_message() {
+        let msg = event_to_ws_message(
+            &SystemEvent::DeviceDiscovered {
+                address: "AA:BB:CC:DD:EE:FF".to_string(),
+                name: "TestPhone".to_string(),
+                rssi: Some(-50),
+            },
+            "test-session",
+        );
+        assert!(msg.is_some());
+        let json = serde_json::to_string(&msg.unwrap()).unwrap();
+        assert!(json.contains("\"type\":\"device_state_changed\""));
+        assert!(json.contains("TestPhone"));
+        assert!(json.contains("discovered"));
+    }
 }
