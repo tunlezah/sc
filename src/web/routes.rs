@@ -178,11 +178,12 @@ async fn post_scan(
     };
     if app.bt_cmd_tx.send(cmd).await.is_err() {
         tracing::error!("Bluetooth manager not running — scan command dropped");
-        app.state.publish(crate::state::SystemEvent::BluetoothStatusChanged {
-            status: crate::state::BluetoothStatus::Error(
-                "Bluetooth service unavailable".to_string(),
-            ),
-        });
+        app.state
+            .publish(crate::state::SystemEvent::BluetoothStatusChanged {
+                status: crate::state::BluetoothStatus::Error(
+                    "Bluetooth service unavailable".to_string(),
+                ),
+            });
     }
     ok_response()
 }
