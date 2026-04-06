@@ -211,18 +211,9 @@ impl BluetoothManager {
                         match cmd {
                             Some(BluetoothCommand::StartScan) => {
                                 info!("Starting Bluetooth discovery");
-                                // If BlueZ is already discovering (stale from a previous
-                                // session or crash), stop it first so we can start fresh.
-                                if adapter.is_discovering().await.unwrap_or(false) {
-                                    warn!("BlueZ already discovering — stopping stale session");
-                                    stop_stale_discovery(&connection, &adapter_name).await;
-                                    // Brief pause to let BlueZ finish cleanup
-                                    tokio::time::sleep(std::time::Duration::from_millis(200))
-                                        .await;
-                                }
-                                match adapter.discover_devices().await {
+                                match start_discovery(&adapter, &adapter_name).await {
                                     Ok(stream) => {
-                                        discover = Some(Box::pin(stream));
+                                        discover = Some(stream);
                                         let mut app = self.state.state.write().await;
                                         app.bluetooth_status = BluetoothStatus::Scanning;
                                         drop(app);
@@ -536,27 +527,77 @@ fn extract_address_from_bt_source(source: &str) -> Option<String> {
     }
 }
 
-/// Stop a stale BlueZ discovery session via D-Bus.
+/// Start Bluetooth discovery, recovering from stale bluer session state.
 ///
-/// BlueZ keeps the adapter in "discovering" state if a previous process
-/// started discovery but crashed or exited without calling StopDiscovery.
-/// The `bluer` crate's `discover_devices()` calls StartDiscovery, which
-/// fails with "Operation already in progress" in this case.
-async fn stop_stale_discovery(connection: &zbus::Connection, adapter_name: &str) {
-    let path: zbus::zvariant::OwnedObjectPath =
-        format!("/org/bluez/{}", adapter_name).try_into().unwrap();
-    let result: Result<(), zbus::Error> = connection
-        .call_method(
-            Some("org.bluez"),
-            &path,
-            Some("org.bluez.Adapter1"),
-            "StopDiscovery",
-            &(),
-        )
-        .await
-        .map(|_| ());
-    match result {
-        Ok(()) => info!("Stopped stale BlueZ discovery session"),
-        Err(e) => warn!("Failed to stop stale discovery: {}", e),
+/// The `bluer` crate tracks discovery sessions internally via a
+/// `SingleSessionToken`. When a previous discovery stream is dropped
+/// (e.g. during auto-stop), the token's async cleanup (StopDiscovery
+/// D-Bus call) may not finish before the next `discover_devices()` call.
+/// This leaves bluer's internal state thinking a session is active, even
+/// though BlueZ itself reports `Discovering: no`.
+///
+/// Recovery: if the first attempt fails with "already in progress", create
+/// a fresh bluer Session + Adapter which has clean session tracking.
+async fn start_discovery(
+    adapter: &bluer::Adapter,
+    adapter_name: &str,
+) -> bluer::Result<std::pin::Pin<Box<dyn futures::Stream<Item = bluer::AdapterEvent> + Send>>> {
+    match adapter.discover_devices().await {
+        Ok(stream) => return Ok(Box::pin(stream)),
+        Err(e) => {
+            let msg = e.to_string();
+            if !msg.contains("already in progress") && !msg.contains("InProgress") {
+                return Err(e);
+            }
+            warn!(
+                "bluer session stale (BlueZ Discovering={}), creating fresh session",
+                adapter.is_discovering().await.unwrap_or(false)
+            );
+        }
+    }
+
+    // Give the previous session token's async Drop a moment to complete
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Retry with the same adapter — the sleep above may have been enough
+    match adapter.discover_devices().await {
+        Ok(stream) => return Ok(Box::pin(stream)),
+        Err(e) => {
+            warn!(
+                "Retry with same adapter failed: {} — creating fresh session",
+                e
+            );
+        }
+    }
+
+    // Create a brand-new bluer Session + Adapter to get clean session state
+    let fresh_session = bluer::Session::new().await?;
+    let fresh_adapter = fresh_session.adapter(adapter_name)?;
+    let stream = fresh_adapter.discover_devices().await?;
+
+    // Wrap in a stream that keeps the fresh session alive
+    Ok(Box::pin(FreshDiscoveryStream {
+        inner: Box::pin(stream),
+        _session: fresh_session,
+        _adapter: fresh_adapter,
+    }))
+}
+
+/// Wrapper stream that keeps a fresh bluer Session + Adapter alive for
+/// the lifetime of the discovery stream.
+struct FreshDiscoveryStream {
+    inner: std::pin::Pin<Box<dyn futures::Stream<Item = bluer::AdapterEvent> + Send>>,
+    _session: bluer::Session,
+    _adapter: bluer::Adapter,
+}
+
+impl futures::Stream for FreshDiscoveryStream {
+    type Item = bluer::AdapterEvent;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
     }
 }
