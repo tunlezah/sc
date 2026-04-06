@@ -178,6 +178,9 @@ impl BluetoothManager {
                             None => {
                                 warn!("Discovery stream ended");
                                 discover = None;
+                                // The stream ended but the BlueZ D-Bus discovery
+                                // session may still be open — close it explicitly.
+                                stop_discovery_direct(&connection, &adapter_name).await;
                                 let mut app = self.state.state.write().await;
                                 app.bluetooth_status = BluetoothStatus::Ready;
                                 drop(app);
@@ -537,9 +540,15 @@ fn extract_address_from_bt_source(source: &str) -> Option<String> {
 /// BlueZ itself has no active discovery.
 ///
 /// Instead, we:
-/// 1. Call `StopDiscovery` (ignore errors — it's fine if nothing was running)
-/// 2. Call `SetDiscoveryFilter` + `StartDiscovery` directly via zbus
-/// 3. Return `adapter.events()` stream for device events (independent of sessions)
+/// 1. If BlueZ is already discovering, call `StopDiscovery` and wait until
+///    the `Discovering` property goes false (with timeout).
+/// 2. Call `StartDiscovery` directly via zbus.
+/// 3. Return `adapter.events()` stream for device events (independent of sessions).
+///
+/// The event stream does NOT use `take_while(Discovering(false))` because
+/// BlueZ toggles the `Discovering` property between scan cycles. Terminating
+/// the stream on the first `false` would leak the D-Bus discovery session
+/// (no `StopDiscovery` call) and cause `InProgress` errors on the next scan.
 async fn start_discovery_direct(
     adapter: &bluer::Adapter,
     connection: &zbus::Connection,
@@ -548,22 +557,30 @@ async fn start_discovery_direct(
     let dbus_path: zbus::zvariant::OwnedObjectPath =
         format!("/org/bluez/{}", adapter_name).try_into().unwrap();
 
-    // Always stop any existing discovery first (ignore errors)
-    let _: Result<zbus::Message, _> = connection
-        .call_method(
-            Some("org.bluez"),
-            &dbus_path,
-            Some("org.bluez.Adapter1"),
-            "StopDiscovery",
-            &(),
-        )
-        .await;
+    // If BlueZ is already discovering, stop it and wait for confirmation.
+    if adapter.is_discovering().await.unwrap_or(false) {
+        warn!("BlueZ already discovering — stopping before restart");
+        let _: Result<zbus::Message, _> = connection
+            .call_method(
+                Some("org.bluez"),
+                &dbus_path,
+                Some("org.bluez.Adapter1"),
+                "StopDiscovery",
+                &(),
+            )
+            .await;
 
-    // Brief pause for BlueZ to finish cleanup
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait until Discovering is actually false (up to 2s)
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if !adapter.is_discovering().await.unwrap_or(true) {
+                break;
+            }
+        }
+    }
 
     // Start discovery via D-Bus
-    connection
+    let start_result = connection
         .call_method(
             Some("org.bluez"),
             &dbus_path,
@@ -571,26 +588,37 @@ async fn start_discovery_direct(
             "StartDiscovery",
             &(),
         )
-        .await
-        .map_err(|e| bluer::Error {
-            kind: bluer::ErrorKind::Failed,
-            message: format!("StartDiscovery failed: {}", e),
-        })?;
+        .await;
 
-    info!("Bluetooth discovery started via direct D-Bus call");
+    match start_result {
+        Ok(_) => {
+            info!("Bluetooth discovery started via direct D-Bus call");
+        }
+        Err(ref e) => {
+            let msg = format!("{}", e);
+            if msg.contains("InProgress") {
+                // Discovery is already running (possibly from a leaked session).
+                // This is fine — we can use the existing discovery session.
+                info!("BlueZ discovery already in progress — reusing existing session");
+            } else {
+                return Err(bluer::Error {
+                    kind: bluer::ErrorKind::Failed,
+                    message: format!("StartDiscovery failed: {}", e),
+                });
+            }
+        }
+    }
 
     // Get the event stream from bluer (doesn't use session tracking)
     let known = adapter.device_addresses().await.unwrap_or_default();
     let known_events = futures::stream::iter(known).map(bluer::AdapterEvent::DeviceAdded);
     let live_events = adapter.events().await?;
 
-    // Combine known devices with live events, stop when Discovering becomes false
-    let combined = known_events.chain(live_events.take_while(|evt| {
-        futures::future::ready(!matches!(
-            evt,
-            bluer::AdapterEvent::PropertyChanged(bluer::AdapterProperty::Discovering(false))
-        ))
-    }));
+    // Combine known devices with live events.
+    // Do NOT use take_while(Discovering(false)) — BlueZ toggles the
+    // Discovering property between scan cycles, which would prematurely
+    // terminate the stream and leak the D-Bus discovery session.
+    let combined = known_events.chain(live_events);
 
     Ok(Box::pin(combined))
 }
