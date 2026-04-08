@@ -47,6 +47,8 @@ function applyMessage(prev: AppState, msg: WsMessage): AppState {
           codec: null,
           last_seen: new Date().toISOString(),
           pipewire_node: null,
+          type: 'classic',
+          is_a2dp_source: false,
         });
       }
       return { ...prev, devices };
@@ -172,6 +174,8 @@ describe('Bluetooth Scanning', () => {
           codec: null,
           last_seen: '2026-01-01T00:00:00Z',
           pipewire_node: null,
+          type: 'classic',
+          is_a2dp_source: false,
         },
       ],
     };

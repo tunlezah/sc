@@ -12,6 +12,8 @@ export type PlaybackStatus = 'playing' | 'paused' | 'stopped' | 'unknown';
 
 export type AudioCodec = 'sbc' | 'aac' | 'ldac' | 'apt_x' | 'apt_x_hd';
 
+export type DeviceKind = 'classic' | 'ble';
+
 export interface DeviceInfo {
   address: string;
   name: string;
@@ -22,6 +24,10 @@ export interface DeviceInfo {
   codec: AudioCodec | null;
   last_seen: string;
   pipewire_node: string | null;
+  /** BLE vs Classic Bluetooth (best-effort classification). */
+  type: DeviceKind;
+  /** Best-effort: device advertises A2DP source UUID. */
+  is_a2dp_source: boolean;
 }
 
 export interface EqBand {

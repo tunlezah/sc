@@ -11,6 +11,11 @@
   --danger: #ef4444;
   --shadow: 0 2px 8px rgba(0,0,0,0.08);
   --radius: 12px;
+  /* Device classification colors. Tuned for legibility on light surfaces. */
+  --device-classic: #15803d;          /* deep green */
+  --device-classic-bg: #dcfce7;
+  --device-ble: #1d4ed8;              /* deep blue */
+  --device-ble-bg: #dbeafe;
 }
 
 [data-theme="dark"] {
@@ -22,6 +27,11 @@
   --text-secondary: #999;
   --border: #2a2a3e;
   --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  /* Brighter green/blue on dark backgrounds for AA contrast. */
+  --device-classic: #4ade80;          /* light green */
+  --device-classic-bg: #14532d;
+  --device-ble: #60a5fa;               /* light blue */
+  --device-ble-bg: #1e3a5f;
 }
 
 * {
@@ -311,6 +321,17 @@ body {
   background: var(--bg);
   border-radius: 8px;
   gap: 8px;
+  border-left: 3px solid transparent;
+}
+
+/* BLE vs Classic differentiation. Colors are tuned for AA-contrast on
+   both --bg backgrounds (light #f5f5f7 / dark #0a0a0f). */
+.device-item--classic {
+  border-left-color: var(--device-classic);
+}
+
+.device-item--ble {
+  border-left-color: var(--device-ble);
 }
 
 .device-info {
@@ -324,6 +345,29 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.device-name--classic {
+  color: var(--device-classic);
+}
+
+.device-name--ble {
+  color: var(--device-ble);
+}
+
+.device-source-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  background: var(--device-classic-bg);
+  color: var(--device-classic);
+  border: 1px solid var(--device-classic);
+  vertical-align: middle;
 }
 
 .device-details {
@@ -731,6 +775,54 @@ body {
   font-weight: 600;
   min-width: 30px;
   text-align: right;
+}
+
+/* Device list controls (BLE toggle + legend) */
+.device-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.device-ble-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.device-legend {
+  display: flex;
+  gap: 10px;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.device-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.device-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.device-legend-swatch--classic {
+  background: var(--device-classic);
+}
+
+.device-legend-swatch--ble {
+  background: var(--device-ble);
 }
 
 /* Device search/filter */

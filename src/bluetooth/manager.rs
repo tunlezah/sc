@@ -284,12 +284,15 @@ impl BluetoothManager {
                         .map(|set| set.into_iter().map(|u| u.to_string()).collect())
                         .unwrap_or_default();
 
+                    let signals = collect_discovery_signals(&device).await;
+
                     discovery::handle_device_discovered(
                         &self.state,
                         addr.to_string(),
                         name,
                         rssi,
                         uuids,
+                        signals,
                     )
                     .await;
                 }
@@ -448,6 +451,21 @@ impl BluetoothManager {
                         }
                     }
 
+                    // Refresh classification: BlueZ may resolve UUIDs / class
+                    // of device after the initial DeviceAdded signal. Only
+                    // upgrades BLE → Classic (handle_device_discovered guards
+                    // against the reverse on stale data).
+                    let uuids: Vec<String> = device
+                        .uuids()
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|set| set.into_iter().map(|u| u.to_string()).collect())
+                        .unwrap_or_default();
+                    let signals = collect_discovery_signals(&device).await;
+                    discovery::refresh_classification(&self.state, &address, &uuids, &signals)
+                        .await;
+
                     if let Some(state) = current_state {
                         if connected && state == DeviceState::Discovered {
                             discovery::update_device_state(
@@ -492,6 +510,24 @@ impl BluetoothManager {
                 }
             }
         }
+    }
+}
+
+/// Read best-effort BLE/Classic classification signals from a bluer Device.
+/// All fields are optional — missing values fall through to the default
+/// classification rules.
+async fn collect_discovery_signals(device: &bluer::Device) -> discovery::DiscoverySignals {
+    let address_type = device.address_type().await.ok().map(|t| match t {
+        bluer::AddressType::BrEdr => "br_edr".to_string(),
+        bluer::AddressType::LePublic => "public".to_string(),
+        bluer::AddressType::LeRandom => "random".to_string(),
+    });
+    let class_of_device = device.class().await.ok().flatten();
+    let has_appearance = device.appearance().await.ok().flatten().is_some();
+    discovery::DiscoverySignals {
+        address_type,
+        class_of_device,
+        has_appearance,
     }
 }
 
