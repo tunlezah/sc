@@ -58,10 +58,9 @@ export function useAppState() {
                 codec: null,
                 last_seen: new Date().toISOString(),
                 pipewire_node: null,
-                // Default to classic so audio-capable candidates aren't
-                // hidden behind the BLE toggle until a snapshot fills in
-                // the real classification.
-                type: 'classic',
+                // Default to BLE — matches the backend default. The real
+                // classification arrives in the next state snapshot.
+                type: 'ble',
                 is_a2dp_source: false,
               });
             }

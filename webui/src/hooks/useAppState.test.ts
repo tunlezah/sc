@@ -47,7 +47,7 @@ function applyMessage(prev: AppState, msg: WsMessage): AppState {
           codec: null,
           last_seen: new Date().toISOString(),
           pipewire_node: null,
-          type: 'classic',
+          type: 'ble',
           is_a2dp_source: false,
         });
       }

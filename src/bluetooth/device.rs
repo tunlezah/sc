@@ -6,31 +6,38 @@ use crate::bluetooth::constants::{A2DP_SINK_UUID, A2DP_SOURCE_UUID};
 
 /// Classification of a Bluetooth device based on its discovery signals.
 ///
-/// `Default::default()` is `Classic`. Absent positive BLE signals we assume
-/// Classic so users don't lose audio-capable devices behind the BLE toggle.
+/// `Default::default()` is `Ble`. Per task spec "lacks BR/EDR service UUIDs"
+/// is the BLE fallback — we only upgrade to Classic on a positive Classic
+/// signal (CoD or known Classic UUID). Once Classic, the classification is
+/// sticky (see `handle_device_discovered`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceKind {
     /// Classic Bluetooth (BR/EDR) — candidate for A2DP audio sources.
-    #[default]
     Classic,
     /// Bluetooth Low Energy — mostly irrelevant for audio.
+    #[default]
     Ble,
 }
 
 /// Classify a device as BLE or Classic based on best-effort signals from BlueZ.
 ///
-/// Logic (first match wins):
+/// Logic:
 /// * A valid Class of Device (CoD) → Classic (CoD only exists for BR/EDR).
-/// * Any known Classic service UUID (A2DP sink/source, etc.) → Classic.
-/// * `address_type` of "random" with no Classic UUIDs → BLE.
-/// * LE-only signals (appearance, manufacturer data) with no CoD → BLE.
-/// * Fallback → Classic (safer default: keep audio-capable candidates visible).
+/// * Any known Classic service UUID (A2DP sink/source, HFP, etc.) → Classic.
+/// * Otherwise → BLE (per task spec: "lacks BR/EDR service UUIDs" → BLE).
+///
+/// `address_type` and `has_appearance` aren't used for the decision: in
+/// practice BlueZ reports dual-mode / BR-EDR devices as public address too,
+/// and appearance is sometimes unavailable on the initial DeviceAdded signal.
+/// Falling back to BLE when we have no positive Classic signal matches the
+/// task requirements and is corrected on the next property poll if BlueZ
+/// later reports CoD or Classic UUIDs.
 pub fn classify_device(
-    address_type: Option<&str>,
+    _address_type: Option<&str>,
     class_of_device: Option<u32>,
     uuids: &[String],
-    has_appearance: bool,
+    _has_appearance: bool,
 ) -> DeviceKind {
     // Strongest signal: only BR/EDR devices have a Class of Device.
     if class_of_device.is_some() {
@@ -42,20 +49,8 @@ pub fn classify_device(
         return DeviceKind::Classic;
     }
 
-    // Random address types are BLE-only. Public address types are ambiguous
-    // (BlueZ reports dual-mode/BR-EDR as "public" too).
-    if matches!(address_type, Some("random")) {
-        return DeviceKind::Ble;
-    }
-
-    // GAP Appearance is typically LE-only and, combined with no CoD, strongly
-    // suggests BLE.
-    if has_appearance {
-        return DeviceKind::Ble;
-    }
-
-    // Unknown → assume Classic so we don't hide audio-capable devices.
-    DeviceKind::Classic
+    // Fallback: BLE.
+    DeviceKind::Ble
 }
 
 /// Classic Bluetooth service UUIDs that imply BR/EDR (non-exhaustive).
@@ -224,8 +219,8 @@ mod tests {
         assert!(!dev.trusted);
         assert!(!dev.has_a2dp);
         assert!(dev.codec.is_none());
-        // Default classification is Classic so audio-capable candidates stay visible.
-        assert_eq!(dev.device_type, DeviceKind::Classic);
+        // Default classification is BLE — Classic requires a positive signal.
+        assert_eq!(dev.device_type, DeviceKind::Ble);
         assert!(!dev.is_a2dp_source);
     }
 
@@ -244,22 +239,24 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_no_signals_is_ble() {
+        // Per task spec: "lacks BR/EDR service UUIDs" → BLE.
+        let kind = classify_device(None, None, &[], false);
+        assert_eq!(kind, DeviceKind::Ble);
+    }
+
+    #[test]
     fn test_classify_random_address_is_ble() {
         let kind = classify_device(Some("random"), None, &[], false);
         assert_eq!(kind, DeviceKind::Ble);
     }
 
     #[test]
-    fn test_classify_appearance_is_ble() {
-        // Appearance with no CoD and no Classic UUIDs → BLE.
-        let kind = classify_device(Some("public"), None, &[], true);
+    fn test_classify_ble_only_uuid_is_ble() {
+        // Heart Rate Service (BLE) shouldn't match any Classic UUID.
+        let uuids = vec!["0000180d-0000-1000-8000-00805f9b34fb".to_string()];
+        let kind = classify_device(Some("public"), None, &uuids, true);
         assert_eq!(kind, DeviceKind::Ble);
-    }
-
-    #[test]
-    fn test_classify_unknown_defaults_to_classic() {
-        let kind = classify_device(None, None, &[], false);
-        assert_eq!(kind, DeviceKind::Classic);
     }
 
     #[test]

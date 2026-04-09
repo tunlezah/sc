@@ -11,11 +11,14 @@
   --danger: #ef4444;
   --shadow: 0 2px 8px rgba(0,0,0,0.08);
   --radius: 12px;
-  /* Device classification colors. Tuned for legibility on light surfaces. */
-  --device-classic: #15803d;          /* deep green */
-  --device-classic-bg: #dcfce7;
-  --device-ble: #1d4ed8;              /* deep blue */
-  --device-ble-bg: #dbeafe;
+  /* Device classification colors. Tuned for AA-contrast text on the
+     `*-panel` panel backgrounds. `*-tag` is used for the pill label. */
+  --device-classic: #15803d;          /* deep green — name + accent */
+  --device-classic-panel: #ecfdf5;    /* subtle panel tint */
+  --device-classic-tag: #dcfce7;      /* Audio Source pill bg */
+  --device-ble: #1d4ed8;              /* deep blue — name + accent */
+  --device-ble-panel: #eff6ff;        /* subtle panel tint */
+  --device-ble-tag: #dbeafe;
 }
 
 [data-theme="dark"] {
@@ -29,9 +32,11 @@
   --shadow: 0 2px 8px rgba(0,0,0,0.3);
   /* Brighter green/blue on dark backgrounds for AA contrast. */
   --device-classic: #4ade80;          /* light green */
-  --device-classic-bg: #14532d;
-  --device-ble: #60a5fa;               /* light blue */
-  --device-ble-bg: #1e3a5f;
+  --device-classic-panel: #0f2a1c;    /* dark green tint */
+  --device-classic-tag: #14532d;
+  --device-ble: #60a5fa;              /* light blue */
+  --device-ble-panel: #0f1e33;        /* dark blue tint */
+  --device-ble-tag: #1e3a5f;
 }
 
 * {
@@ -317,21 +322,26 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 8px 12px 8px 14px;
   background: var(--bg);
   border-radius: 8px;
   gap: 8px;
-  border-left: 3px solid transparent;
+  border-left: 5px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-/* BLE vs Classic differentiation. Colors are tuned for AA-contrast on
-   both --bg backgrounds (light #f5f5f7 / dark #0a0a0f). */
+/* BLE vs Classic differentiation. The left accent + name color + subtle
+   tinted background combine so the difference is obvious in both light
+   and dark themes. Colors are AA-contrast on --bg (light #f5f5f7 /
+   dark #0a0a0f). */
 .device-item--classic {
   border-left-color: var(--device-classic);
+  background: var(--device-classic-panel);
 }
 
 .device-item--ble {
   border-left-color: var(--device-ble);
+  background: var(--device-ble-panel);
 }
 
 .device-info {
@@ -364,7 +374,7 @@ body {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  background: var(--device-classic-bg);
+  background: var(--device-classic-tag);
   color: var(--device-classic);
   border: 1px solid var(--device-classic);
   vertical-align: middle;
