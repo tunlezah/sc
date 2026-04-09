@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import type { DeviceInfo, DeviceState } from '../../types';
 import * as api from '../../api/rest';
 import { CodecStrip } from '../DeviceList/CodecStrip';
@@ -13,6 +13,8 @@ interface AudioInputProps {
   lineInActive: boolean;
   lineInAvailable: boolean;
 }
+
+const SHOW_BLE_KEY = 'soundsync-show-ble';
 
 function stateBadge(state: DeviceState) {
   const labels: Record<DeviceState, { label: string; cls: string }> = {
@@ -33,6 +35,14 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
   const [collapsed, setCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<InputTab>('bluetooth');
   const [filter, setFilter] = useState('');
+  const [showBle, setShowBle] = useState<boolean>(() => {
+    const stored = localStorage.getItem(SHOW_BLE_KEY);
+    return stored === null ? true : stored !== 'false';
+  });
+
+  useEffect(() => {
+    localStorage.setItem(SHOW_BLE_KEY, showBle ? 'true' : 'false');
+  }, [showBle]);
 
   const handleScan = () => {
     if (status === 'scanning') {
@@ -52,12 +62,16 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
     }
   };
 
+  // BLE filter first (hide noise), then text search.
+  const visible = showBle ? devices : devices.filter((d) => d.type !== 'ble');
   const filtered = filter
-    ? devices.filter((d) => {
+    ? visible.filter((d) => {
         const q = filter.toLowerCase();
         return (d.name || '').toLowerCase().includes(q) || d.address.toLowerCase().includes(q);
       })
-    : devices;
+    : visible;
+
+  const bleHiddenCount = showBle ? 0 : devices.length - visible.length;
 
   const hasActiveBt = devices.some(d =>
     d.state === 'connected' || d.state === 'audio_active' ||
@@ -79,7 +93,7 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
             class={`output-tab ${activeTab === 'bluetooth' ? 'active' : ''}`}
             onClick={() => setActiveTab('bluetooth')}
           >
-            Bluetooth ({devices.length})
+            Bluetooth ({visible.length}{bleHiddenCount > 0 ? ` / ${devices.length}` : ''})
           </button>
           <button
             class={`output-tab ${activeTab === 'line_in' ? 'active' : ''}`}
@@ -102,7 +116,29 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
               )}
             </div>
 
-            {devices.length > 0 && (
+            <div class="device-controls">
+              <label class="device-ble-toggle" title="Show Bluetooth Low Energy devices in the list">
+                <button
+                  type="button"
+                  class={`toggle toggle-sm ${showBle ? 'active' : ''}`}
+                  aria-pressed={showBle}
+                  onClick={() => setShowBle(!showBle)}
+                />
+                <span>Show BLE Devices</span>
+              </label>
+              <div class="device-legend" aria-hidden="true">
+                <span class="device-legend-item">
+                  <span class="device-legend-swatch device-legend-swatch--classic" />
+                  Audio
+                </span>
+                <span class="device-legend-item">
+                  <span class="device-legend-swatch device-legend-swatch--ble" />
+                  BLE
+                </span>
+              </div>
+            </div>
+
+            {visible.length > 0 && (
               <div class="device-search">
                 <input
                   type="text"
@@ -118,32 +154,44 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
               <div class="empty-state">
                 {devices.length === 0
                   ? 'No devices found. Start scanning to discover Bluetooth devices.'
-                  : 'No devices match your search.'}
+                  : visible.length === 0
+                    ? `BLE devices hidden (${bleHiddenCount}). Toggle "Show BLE Devices" to see them.`
+                    : 'No devices match your search.'}
               </div>
             ) : (
               <div class="device-list">
-                {filtered.map((device) => (
-                  <div class="device-item" key={device.address}>
-                    <div class="device-info">
-                      <div class="device-name">{device.name || device.address}</div>
-                      <div class="device-details">
-                        <span>{device.address}</span>
-                        {device.rssi !== null && <span>{device.rssi} dBm</span>}
-                        {stateBadge(device.state)}
+                {filtered.map((device) => {
+                  const isBle = device.type === 'ble';
+                  const itemCls = isBle ? 'device-item device-item--ble' : 'device-item device-item--classic';
+                  const nameCls = isBle ? 'device-name device-name--ble' : 'device-name device-name--classic';
+                  return (
+                    <div class={itemCls} key={device.address}>
+                      <div class="device-info">
+                        <div class={nameCls}>
+                          {device.name || device.address}
+                          {device.is_a2dp_source && (
+                            <span class="device-source-tag" title="Advertises A2DP audio source">Audio Source</span>
+                          )}
+                        </div>
+                        <div class="device-details">
+                          <span>{device.address}</span>
+                          {device.rssi !== null && <span>{device.rssi} dBm</span>}
+                          {stateBadge(device.state)}
+                        </div>
+                        {device.codec && <CodecStrip activeCodec={device.codec} />}
                       </div>
-                      {device.codec && <CodecStrip activeCodec={device.codec} />}
+                      <div class="device-actions">
+                        {(device.state === 'discovered' || device.state === 'paired' || device.state === 'disconnected') && (
+                          <button class="btn btn-sm btn-primary" onClick={() => api.connectDevice(device.address)}>Connect</button>
+                        )}
+                        {(device.state === 'connected' || device.state === 'audio_active' || device.state === 'profile_negotiated' || device.state === 'pipewire_source_ready') && (
+                          <button class="btn btn-sm btn-secondary" onClick={() => api.disconnectDevice(device.address)}>Disconnect</button>
+                        )}
+                        <button class="btn btn-sm btn-danger" onClick={() => api.removeDevice(device.address)}>Remove</button>
+                      </div>
                     </div>
-                    <div class="device-actions">
-                      {(device.state === 'discovered' || device.state === 'paired' || device.state === 'disconnected') && (
-                        <button class="btn btn-sm btn-primary" onClick={() => api.connectDevice(device.address)}>Connect</button>
-                      )}
-                      {(device.state === 'connected' || device.state === 'audio_active' || device.state === 'profile_negotiated' || device.state === 'pipewire_source_ready') && (
-                        <button class="btn btn-sm btn-secondary" onClick={() => api.disconnectDevice(device.address)}>Disconnect</button>
-                      )}
-                      <button class="btn btn-sm btn-danger" onClick={() => api.removeDevice(device.address)}>Remove</button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
