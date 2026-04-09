@@ -72,15 +72,11 @@ pub async fn handle_device_discovered(
         signals.has_appearance,
     );
 
-    use std::collections::hash_map::Entry;
     let mut app = state.state.write().await;
-    let (device, is_new) = match app.devices.entry(address.clone()) {
-        Entry::Occupied(e) => (e.into_mut(), false),
-        Entry::Vacant(e) => (
-            e.insert(DeviceInfo::new(address.clone(), name.clone())),
-            true,
-        ),
-    };
+    let device = app
+        .devices
+        .entry(address.clone())
+        .or_insert_with(|| DeviceInfo::new(address.clone(), name.clone()));
 
     // Only update name if the new value is non-empty — an empty name means
     // BlueZ hasn't resolved the friendly name yet and we don't want to
@@ -95,11 +91,10 @@ pub async fn handle_device_discovered(
     if is_a2dp_source {
         device.is_a2dp_source = true;
     }
-    // Apply classification on first sight; for existing devices, only allow
-    // BLE → Classic upgrades. We never downgrade Classic → BLE because a
-    // later sparse scan result would otherwise hide audio-capable candidates
-    // behind the BLE filter.
-    if is_new || device.device_type == DeviceKind::Ble {
+    // Sticky Classic rule: default is BLE, so a fresh device is BLE and the
+    // first positive Classic signal upgrades it; subsequent sparse scans
+    // cannot downgrade it back to BLE.
+    if device.device_type == DeviceKind::Ble {
         device.device_type = new_kind;
     }
     device.last_seen = chrono::Utc::now();
@@ -337,6 +332,47 @@ mod tests {
         let dev = app.devices.get("CC:CC:CC:CC:CC:CC").unwrap();
         assert!(dev.is_a2dp_source);
         assert_eq!(dev.device_type, DeviceKind::Classic);
+    }
+
+    #[tokio::test]
+    async fn test_ble_upgrades_to_classic_on_rescan() {
+        // Simulate the real-world case where the initial DeviceAdded signal
+        // has no UUIDs resolved yet (BlueZ populates them asynchronously).
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        // First scan: empty — classified as BLE (default).
+        handle_device_discovered(
+            &state,
+            "EE:EE:EE:EE:EE:EE".into(),
+            "Phone".into(),
+            None,
+            vec![],
+            DiscoverySignals::default(),
+        )
+        .await;
+        {
+            let app = state.state.read().await;
+            assert_eq!(
+                app.devices.get("EE:EE:EE:EE:EE:EE").unwrap().device_type,
+                DeviceKind::Ble
+            );
+        }
+
+        // Second scan: UUIDs now resolved — upgrade to Classic.
+        handle_device_discovered(
+            &state,
+            "EE:EE:EE:EE:EE:EE".into(),
+            "Phone".into(),
+            None,
+            vec![A2DP_SOURCE_UUID.to_string()],
+            DiscoverySignals::default(),
+        )
+        .await;
+
+        let app = state.state.read().await;
+        let dev = app.devices.get("EE:EE:EE:EE:EE:EE").unwrap();
+        assert_eq!(dev.device_type, DeviceKind::Classic);
+        assert!(dev.is_a2dp_source);
     }
 
     #[tokio::test]

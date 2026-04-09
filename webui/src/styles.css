@@ -11,11 +11,17 @@
   --danger: #ef4444;
   --shadow: 0 2px 8px rgba(0,0,0,0.08);
   --radius: 12px;
-  /* Device classification colors. Tuned for legibility on light surfaces. */
-  --device-classic: #15803d;          /* deep green */
-  --device-classic-bg: #dcfce7;
-  --device-ble: #1d4ed8;              /* deep blue */
-  --device-ble-bg: #dbeafe;
+  /* Device classification highlights. Tuned for high visibility —
+     device items use the `*-panel` background and a coloured border,
+     with AA-contrast text in `*-text`. */
+  --device-classic: #15803d;          /* deep green accent + border */
+  --device-classic-panel: #bbf7d0;    /* saturated mint highlight */
+  --device-classic-text: #064e29;     /* name / details text */
+  --device-classic-tag: #dcfce7;
+  --device-ble: #1d4ed8;              /* deep blue accent + border */
+  --device-ble-panel: #bfdbfe;        /* saturated sky highlight */
+  --device-ble-text: #0b2c82;         /* name / details text */
+  --device-ble-tag: #dbeafe;
 }
 
 [data-theme="dark"] {
@@ -27,11 +33,15 @@
   --text-secondary: #999;
   --border: #2a2a3e;
   --shadow: 0 2px 8px rgba(0,0,0,0.3);
-  /* Brighter green/blue on dark backgrounds for AA contrast. */
-  --device-classic: #4ade80;          /* light green */
-  --device-classic-bg: #14532d;
-  --device-ble: #60a5fa;               /* light blue */
-  --device-ble-bg: #1e3a5f;
+  /* Saturated panel backgrounds with bright text for high contrast. */
+  --device-classic: #4ade80;          /* bright green accent */
+  --device-classic-panel: #0b3a22;    /* rich dark green */
+  --device-classic-text: #bbf7d0;     /* light mint text */
+  --device-classic-tag: #14532d;
+  --device-ble: #60a5fa;              /* bright blue accent */
+  --device-ble-panel: #0b2a52;        /* rich dark blue */
+  --device-ble-text: #bfdbfe;         /* light sky text */
+  --device-ble-tag: #1e3a5f;
 }
 
 * {
@@ -317,21 +327,38 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 8px 12px 8px 14px;
   background: var(--bg);
   border-radius: 8px;
   gap: 8px;
-  border-left: 3px solid transparent;
+  border: 1px solid transparent;
+  border-left-width: 6px;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-/* BLE vs Classic differentiation. Colors are tuned for AA-contrast on
-   both --bg backgrounds (light #f5f5f7 / dark #0a0a0f). */
+/* BLE vs Classic differentiation. Saturated panel background + thick
+   left accent + matching full border + name colour. Designed so the two
+   kinds are unmistakable in both light and dark themes. */
 .device-item--classic {
-  border-left-color: var(--device-classic);
+  background: var(--device-classic-panel);
+  border-color: var(--device-classic);
+  color: var(--device-classic-text);
 }
 
 .device-item--ble {
-  border-left-color: var(--device-ble);
+  background: var(--device-ble-panel);
+  border-color: var(--device-ble);
+  color: var(--device-ble-text);
+}
+
+/* Details row (address / RSSI) inherits the panel text colour so it
+   doesn't disappear against a saturated background. */
+.device-item--classic .device-details {
+  color: var(--device-classic-text);
+}
+
+.device-item--ble .device-details {
+  color: var(--device-ble-text);
 }
 
 .device-info {
@@ -348,11 +375,13 @@ body {
 }
 
 .device-name--classic {
-  color: var(--device-classic);
+  color: var(--device-classic-text);
+  font-weight: 700;
 }
 
 .device-name--ble {
-  color: var(--device-ble);
+  color: var(--device-ble-text);
+  font-weight: 700;
 }
 
 .device-source-tag {
@@ -364,7 +393,7 @@ body {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  background: var(--device-classic-bg);
+  background: var(--device-classic-tag);
   color: var(--device-classic);
   border: 1px solid var(--device-classic);
   vertical-align: middle;
