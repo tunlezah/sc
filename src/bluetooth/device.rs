@@ -290,6 +290,28 @@ mod tests {
     }
 
     #[test]
+    fn test_device_info_serializes_type_field() {
+        // The frontend consumes `type` (renamed from device_type) and
+        // `is_a2dp_source`. Guard against accidental renames that would
+        // silently break the UI colouring.
+        let dev = DeviceInfo::new("AA:BB:CC:DD:EE:FF".into(), "Test".into());
+        let json = serde_json::to_value(&dev).unwrap();
+        let obj = json.as_object().expect("DeviceInfo serializes as object");
+        assert!(
+            obj.contains_key("type"),
+            "DeviceInfo JSON is missing `type`: {}",
+            json
+        );
+        assert!(
+            obj.contains_key("is_a2dp_source"),
+            "DeviceInfo JSON is missing `is_a2dp_source`: {}",
+            json
+        );
+        assert_eq!(obj["type"], "ble");
+        assert_eq!(obj["is_a2dp_source"], false);
+    }
+
+    #[test]
     fn test_device_state_serialization() {
         let state = DeviceState::AudioActive;
         let json = serde_json::to_string(&state).unwrap();
