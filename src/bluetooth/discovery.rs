@@ -1,7 +1,9 @@
 use tracing::{debug, info, warn};
 
 use crate::bluetooth::constants::{A2DP_SINK_UUID, A2DP_SOURCE_UUID, BLUEZ_NODE_PREFIXES};
-use crate::bluetooth::device::{DeviceInfo, DeviceState};
+use crate::bluetooth::device::{
+    classify_device, has_a2dp_source_uuid, DeviceInfo, DeviceKind, DeviceState,
+};
 use crate::state::{AppStateHandle, SystemEvent};
 
 /// Check if a string looks like a MAC address (colon or dash separated).
@@ -40,6 +42,18 @@ pub fn is_bluetooth_audio_node(node_name: &str) -> bool {
         .any(|prefix| node_name.starts_with(prefix))
 }
 
+/// Extra signals collected at discovery time used to classify the device
+/// as BLE vs Classic Bluetooth. All fields are best-effort.
+#[derive(Debug, Default, Clone)]
+pub struct DiscoverySignals {
+    /// BlueZ AddressType ("public" or "random").
+    pub address_type: Option<String>,
+    /// Class of Device — only present for BR/EDR devices.
+    pub class_of_device: Option<u32>,
+    /// GAP Appearance — typically only present for LE devices.
+    pub has_appearance: bool,
+}
+
 /// Process a discovered device, updating state and emitting events.
 pub async fn handle_device_discovered(
     state: &AppStateHandle,
@@ -47,14 +61,26 @@ pub async fn handle_device_discovered(
     name: String,
     rssi: Option<i16>,
     uuids: Vec<String>,
+    signals: DiscoverySignals,
 ) {
     let has_a2dp = has_a2dp_uuid(&uuids);
+    let is_a2dp_source = has_a2dp_source_uuid(&uuids);
+    let new_kind = classify_device(
+        signals.address_type.as_deref(),
+        signals.class_of_device,
+        &uuids,
+        signals.has_appearance,
+    );
 
+    use std::collections::hash_map::Entry;
     let mut app = state.state.write().await;
-    let device = app
-        .devices
-        .entry(address.clone())
-        .or_insert_with(|| DeviceInfo::new(address.clone(), name.clone()));
+    let (device, is_new) = match app.devices.entry(address.clone()) {
+        Entry::Occupied(e) => (e.into_mut(), false),
+        Entry::Vacant(e) => (
+            e.insert(DeviceInfo::new(address.clone(), name.clone())),
+            true,
+        ),
+    };
 
     // Only update name if the new value is non-empty — an empty name means
     // BlueZ hasn't resolved the friendly name yet and we don't want to
@@ -64,6 +90,18 @@ pub async fn handle_device_discovered(
     }
     device.rssi = rssi;
     device.has_a2dp = has_a2dp;
+    // Keep is_a2dp_source sticky once observed — UUID lists can flip empty
+    // between scans before BlueZ has finished resolving them.
+    if is_a2dp_source {
+        device.is_a2dp_source = true;
+    }
+    // Apply classification on first sight; for existing devices, only allow
+    // BLE → Classic upgrades. We never downgrade Classic → BLE because a
+    // later sparse scan result would otherwise hide audio-capable candidates
+    // behind the BLE filter.
+    if is_new || device.device_type == DeviceKind::Ble {
+        device.device_type = new_kind;
+    }
     device.last_seen = chrono::Utc::now();
 
     let resolved_name = device.name.clone();
@@ -75,6 +113,37 @@ pub async fn handle_device_discovered(
         name: resolved_name,
         rssi,
     });
+}
+
+/// Re-classify an existing device based on a fresh property read.
+/// Used by the property poller to upgrade BLE → Classic when BlueZ resolves
+/// CoD or service UUIDs after the initial DeviceAdded signal. Never downgrades
+/// Classic → BLE — that direction would lose audio-capable candidates if a
+/// later poll returns sparse data.
+pub async fn refresh_classification(
+    state: &AppStateHandle,
+    address: &str,
+    uuids: &[String],
+    signals: &DiscoverySignals,
+) {
+    let new_kind = classify_device(
+        signals.address_type.as_deref(),
+        signals.class_of_device,
+        uuids,
+        signals.has_appearance,
+    );
+    let new_a2dp_source = has_a2dp_source_uuid(uuids);
+
+    let mut app = state.state.write().await;
+    if let Some(device) = app.devices.get_mut(address) {
+        // Once Classic, stay Classic. BLE → Classic upgrades are allowed.
+        if device.device_type == DeviceKind::Ble && new_kind == DeviceKind::Classic {
+            device.device_type = DeviceKind::Classic;
+        }
+        if new_a2dp_source {
+            device.is_a2dp_source = true;
+        }
+    }
 }
 
 /// Update a device's display name and notify the frontend.
@@ -210,6 +279,7 @@ mod tests {
             "TestPhone".into(),
             Some(-50),
             vec![A2DP_SINK_UUID.to_string()],
+            DiscoverySignals::default(),
         )
         .await;
 
@@ -217,10 +287,92 @@ mod tests {
         let dev = app.devices.get("AA:BB:CC:DD:EE:FF").unwrap();
         assert!(dev.has_a2dp);
         assert_eq!(dev.rssi, Some(-50));
+        // A2DP sink UUID → Classic
+        assert_eq!(dev.device_type, DeviceKind::Classic);
         drop(app);
 
         let event = rx.try_recv().unwrap();
         assert!(matches!(event, SystemEvent::DeviceDiscovered { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_handle_device_discovered_ble() {
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        handle_device_discovered(
+            &state,
+            "BB:BB:BB:BB:BB:BB".into(),
+            "FitnessTracker".into(),
+            Some(-70),
+            vec![],
+            DiscoverySignals {
+                address_type: Some("random".into()),
+                class_of_device: None,
+                has_appearance: true,
+            },
+        )
+        .await;
+
+        let app = state.state.read().await;
+        let dev = app.devices.get("BB:BB:BB:BB:BB:BB").unwrap();
+        assert_eq!(dev.device_type, DeviceKind::Ble);
+        assert!(!dev.is_a2dp_source);
+    }
+
+    #[tokio::test]
+    async fn test_handle_device_discovered_a2dp_source_flag() {
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        handle_device_discovered(
+            &state,
+            "CC:CC:CC:CC:CC:CC".into(),
+            "Phone".into(),
+            None,
+            vec![A2DP_SOURCE_UUID.to_string()],
+            DiscoverySignals::default(),
+        )
+        .await;
+
+        let app = state.state.read().await;
+        let dev = app.devices.get("CC:CC:CC:CC:CC:CC").unwrap();
+        assert!(dev.is_a2dp_source);
+        assert_eq!(dev.device_type, DeviceKind::Classic);
+    }
+
+    #[tokio::test]
+    async fn test_classification_does_not_downgrade_classic_to_ble() {
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        // First scan: Classic UUID seen.
+        handle_device_discovered(
+            &state,
+            "DD:DD:DD:DD:DD:DD".into(),
+            "Speaker".into(),
+            None,
+            vec![A2DP_SINK_UUID.to_string()],
+            DiscoverySignals::default(),
+        )
+        .await;
+
+        // Second scan: empty UUIDs and a "random" address — would normally classify as BLE.
+        handle_device_discovered(
+            &state,
+            "DD:DD:DD:DD:DD:DD".into(),
+            "Speaker".into(),
+            None,
+            vec![],
+            DiscoverySignals {
+                address_type: Some("random".into()),
+                class_of_device: None,
+                has_appearance: false,
+            },
+        )
+        .await;
+
+        let app = state.state.read().await;
+        let dev = app.devices.get("DD:DD:DD:DD:DD:DD").unwrap();
+        // Must remain Classic — don't lose A2DP candidates on a stale rescan.
+        assert_eq!(dev.device_type, DeviceKind::Classic);
     }
 
     #[tokio::test]
@@ -234,6 +386,7 @@ mod tests {
             "Test".into(),
             None,
             vec![],
+            DiscoverySignals::default(),
         )
         .await;
 
@@ -255,6 +408,7 @@ mod tests {
             "MyPhone".into(),
             Some(-40),
             vec![],
+            DiscoverySignals::default(),
         )
         .await;
 
@@ -265,6 +419,7 @@ mod tests {
             "".into(),
             Some(-50),
             vec![],
+            DiscoverySignals::default(),
         )
         .await;
 
@@ -287,13 +442,22 @@ mod tests {
             "Speaker".into(),
             None,
             vec![],
+            DiscoverySignals::default(),
         )
         .await;
 
         let mut rx = state.subscribe();
 
         // Re-discovered with empty name
-        handle_device_discovered(&state, "AA:BB:CC:DD:EE:FF".into(), "".into(), None, vec![]).await;
+        handle_device_discovered(
+            &state,
+            "AA:BB:CC:DD:EE:FF".into(),
+            "".into(),
+            None,
+            vec![],
+            DiscoverySignals::default(),
+        )
+        .await;
 
         let event = rx.try_recv().unwrap();
         // The event should carry the resolved name "Speaker", not ""
@@ -310,7 +474,15 @@ mod tests {
         let state = AppStateHandle::new(crate::state::config::Config::default());
 
         // Add a device with empty name
-        handle_device_discovered(&state, "AA:BB:CC:DD:EE:FF".into(), "".into(), None, vec![]).await;
+        handle_device_discovered(
+            &state,
+            "AA:BB:CC:DD:EE:FF".into(),
+            "".into(),
+            None,
+            vec![],
+            DiscoverySignals::default(),
+        )
+        .await;
 
         let mut rx = state.subscribe();
 
