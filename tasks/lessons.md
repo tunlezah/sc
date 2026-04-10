@@ -129,3 +129,11 @@
 ## Stale pipewire-pulse After PipeWire Restart
 **Pattern:** pipewire-pulse running since days ago while pipewire was restarted today. The stale pipewire-pulse has an outdated connection to the old PipeWire instance, causing intermittent audio routing failures.
 **Rule:** Always restart pipewire-pulse and wireplumber together with pipewire. Check start times of all three processes to detect session mismatches.
+
+## Async WebRTC Signaling Handlers Must Await setRemoteDescription Before addIceCandidate
+**Pattern:** WebSocket message handler calls `handleAnswer(sdp)` and `handleIceCandidate(data)` without `await`. When the server sends the SDP answer followed immediately by ICE candidates, `addIceCandidate()` is called before `setRemoteDescription()` has resolved. Chrome/Firefox internally queue early candidates. Safari throws `InvalidStateError` and silently drops them, breaking the ICE negotiation.
+**Rule:** Either (a) `await` the answer handler before processing candidates, or (b) implement an explicit ICE candidate queue that buffers candidates until `remoteDescription` is set, then flushes. Never call `addIceCandidate()` on an unresolved `setRemoteDescription()` — Safari enforces this strictly.
+
+## setTimeout Callbacks Are Not User Gestures for Safari Autoplay
+**Pattern:** WebRTC fails in Safari, 5-second timeout fires, creates a new `<audio>` element with `src` and calls `.play()`. Safari blocks this with `NotAllowedError` because `setTimeout` callbacks are not user gesture contexts. The `.catch(() => {})` silently swallows the error.
+**Rule:** If a fallback audio path might execute outside a user gesture, pre-create the `<audio>` element during the original gesture (click handler) and keep a reference. In the timeout, only set `.src` on the pre-existing element. Or restructure so the fallback also runs within a user-initiated event.
