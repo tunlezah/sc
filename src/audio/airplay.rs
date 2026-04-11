@@ -443,6 +443,13 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
             let address = fields[7].to_string();
             let port: u16 = fields[8].parse().unwrap_or(7000);
 
+            // Skip IPv6 addresses BEFORE dedup — otherwise an IPv6 entry
+            // claims the name in seen_names, and the IPv4 entry for the same
+            // device is then skipped as a "duplicate", losing the device entirely.
+            if address.contains(':') {
+                continue;
+            }
+
             // Skip duplicates (same device on different interfaces)
             if seen_names.contains(&name) {
                 continue;
@@ -457,11 +464,6 @@ async fn discover_airplay_devices() -> Vec<AirPlayDeviceInfo> {
             } else {
                 "AirPlay".to_string()
             };
-
-            // Skip IPv6 addresses for simplicity
-            if address.contains(':') {
-                continue;
-            }
 
             devices.push(AirPlayDeviceInfo {
                 name,
@@ -653,10 +655,18 @@ async fn find_raop_sink(device: &AirPlayDeviceInfo) -> Option<String> {
         .ok()?;
 
     if !result.status.success() {
+        debug!("find_raop_sink: pactl list short sinks failed");
         return None;
     }
 
     let stdout = String::from_utf8_lossy(&result.stdout);
+
+    // Count RAOP sinks for diagnostics
+    let raop_count = stdout.lines().filter(|l| l.contains("raop")).count();
+    debug!(
+        "find_raop_sink: looking for '{}' (addr={}) among {} RAOP sinks",
+        device.name, device.address, raop_count
+    );
 
     // Look for a sink whose name contains the device address or name
     // RAOP sinks typically have names like "raop_sink.<address>" or contain the device name
@@ -669,6 +679,7 @@ async fn find_raop_sink(device: &AirPlayDeviceInfo) -> Option<String> {
                 if !device.address.is_empty() {
                     let addr_underscore = device.address.replace('.', "_");
                     if sink_name.contains(&addr_underscore) || sink_name.contains(&device.address) {
+                        debug!("find_raop_sink: matched by address: {}", sink_name);
                         return Some(sink_name.to_string());
                     }
                 }
@@ -678,12 +689,17 @@ async fn find_raop_sink(device: &AirPlayDeviceInfo) -> Option<String> {
                 if sink_lower.contains(&device_name_lower.replace(' ', "_"))
                     || sink_lower.contains(&device_name_lower.replace(' ', ""))
                 {
+                    debug!("find_raop_sink: matched by name: {}", sink_name);
                     return Some(sink_name.to_string());
                 }
             }
         }
     }
 
+    debug!(
+        "find_raop_sink: no match for '{}' (addr={})",
+        device.name, device.address
+    );
     None
 }
 

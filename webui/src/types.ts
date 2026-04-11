@@ -42,6 +42,7 @@ export interface TrackInfo {
   artist: string;
   album: string;
   duration_ms: number;
+  position_ms?: number;
   track_number: number | null;
   artwork_url?: string;
 }

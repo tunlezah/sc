@@ -35,6 +35,8 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
   const [collapsed, setCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<InputTab>('bluetooth');
   const [filter, setFilter] = useState('');
+  // Track which devices have a pending connect so we can show "Connecting..."
+  const [connecting, setConnecting] = useState<Set<string>>(new Set());
   const [showBle, setShowBle] = useState<boolean>(() => {
     const stored = localStorage.getItem(SHOW_BLE_KEY);
     return stored === null ? true : stored !== 'false';
@@ -43,6 +45,20 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
   useEffect(() => {
     localStorage.setItem(SHOW_BLE_KEY, showBle ? 'true' : 'false');
   }, [showBle]);
+
+  // Clear "Connecting..." for devices that have progressed past discovered/paired/disconnected
+  useEffect(() => {
+    setConnecting((prev) => {
+      const next = new Set(prev);
+      for (const addr of prev) {
+        const dev = devices.find((d) => d.address === addr);
+        if (dev && dev.state !== 'discovered' && dev.state !== 'paired' && dev.state !== 'disconnected') {
+          next.delete(addr);
+        }
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [devices]);
 
   const handleScan = () => {
     if (status === 'scanning') {
@@ -182,7 +198,18 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
                       </div>
                       <div class="device-actions">
                         {(device.state === 'discovered' || device.state === 'paired' || device.state === 'disconnected') && (
-                          <button class="btn btn-sm btn-primary" onClick={() => api.connectDevice(device.address)}>Connect</button>
+                          <button
+                            class="btn btn-sm btn-primary"
+                            disabled={connecting.has(device.address)}
+                            onClick={() => {
+                              setConnecting((prev) => new Set(prev).add(device.address));
+                              api.connectDevice(device.address).catch(() => {
+                                setConnecting((prev) => { const n = new Set(prev); n.delete(device.address); return n; });
+                              });
+                            }}
+                          >
+                            {connecting.has(device.address) ? 'Connecting...' : 'Connect'}
+                          </button>
                         )}
                         {(device.state === 'connected' || device.state === 'audio_active' || device.state === 'profile_negotiated' || device.state === 'pipewire_source_ready') && (
                           <button class="btn btn-sm btn-secondary" onClick={() => api.disconnectDevice(device.address)}>Disconnect</button>

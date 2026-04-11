@@ -60,11 +60,13 @@ export function MediaControls({ trackInfo, playbackStatus, ws, activeDevice }: M
     }
   }, [isPlaying, trackInfo?.duration_ms, trackInfo?.title]);
 
-  // Reset elapsed on track change
+  // Reset elapsed on track change — use position_ms from AVRCP if available
+  // so the progress bar starts at the right point for mid-track joins
   useEffect(() => {
-    elapsedRef.current = 0;
-    setElapsed(0);
-    trackStartRef.current = Date.now();
+    const startPos = trackInfo?.position_ms ?? 0;
+    elapsedRef.current = startPos;
+    setElapsed(startPos);
+    trackStartRef.current = Date.now() - startPos;
   }, [trackInfo?.title, trackInfo?.artist]);
 
   const cleanup = useCallback(() => {
