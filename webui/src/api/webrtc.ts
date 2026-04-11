@@ -8,6 +8,11 @@ export class WebRTCClient {
   private ws: WebRTCTransport;
   private audioElement: HTMLAudioElement | null = null;
   private onStateChange: (playing: boolean) => void;
+  // Safari throws InvalidStateError if addIceCandidate() is called before
+  // setRemoteDescription() completes. Chrome/Firefox silently queue candidates,
+  // but Safari does not. Buffer candidates until the remote description is set.
+  private remoteDescriptionSet = false;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
 
   constructor(ws: WebRTCTransport, onStateChange: (playing: boolean) => void) {
     this.ws = ws;
@@ -97,6 +102,15 @@ export class WebRTCClient {
   async handleAnswer(sdp: string): Promise<void> {
     if (this.pc) {
       await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+      this.remoteDescriptionSet = true;
+
+      // Flush any ICE candidates that arrived before setRemoteDescription completed.
+      // This is the fix for Safari — it rejects addIceCandidate() calls made before
+      // the remote description is set, unlike Chrome/Firefox which queue them.
+      for (const init of this.pendingCandidates) {
+        await this.pc.addIceCandidate(new RTCIceCandidate(init));
+      }
+      this.pendingCandidates = [];
     }
   }
 
@@ -120,6 +134,11 @@ export class WebRTCClient {
       sdpMLineIndex,
     };
 
+    if (!this.remoteDescriptionSet) {
+      this.pendingCandidates.push(init);
+      return;
+    }
+
     await this.pc.addIceCandidate(new RTCIceCandidate(init));
   }
 
@@ -132,6 +151,8 @@ export class WebRTCClient {
     }
     this.pc?.close();
     this.pc = null;
+    this.remoteDescriptionSet = false;
+    this.pendingCandidates = [];
     this.onStateChange(false);
     this.ws.send({ type: 'webrtc_stop', data: {} });
   }

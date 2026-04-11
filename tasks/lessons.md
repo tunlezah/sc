@@ -129,3 +129,19 @@
 ## Stale pipewire-pulse After PipeWire Restart
 **Pattern:** pipewire-pulse running since days ago while pipewire was restarted today. The stale pipewire-pulse has an outdated connection to the old PipeWire instance, causing intermittent audio routing failures.
 **Rule:** Always restart pipewire-pulse and wireplumber together with pipewire. Check start times of all three processes to detect session mismatches.
+
+## Async WebRTC Signaling Handlers Must Await setRemoteDescription Before addIceCandidate
+**Pattern:** WebSocket message handler calls `handleAnswer(sdp)` and `handleIceCandidate(data)` without `await`. When the server sends the SDP answer followed immediately by ICE candidates, `addIceCandidate()` is called before `setRemoteDescription()` has resolved. Chrome/Firefox internally queue early candidates. Safari throws `InvalidStateError` and silently drops them, breaking the ICE negotiation.
+**Rule:** Either (a) `await` the answer handler before processing candidates, or (b) implement an explicit ICE candidate queue that buffers candidates until `remoteDescription` is set, then flushes. Never call `addIceCandidate()` on an unresolved `setRemoteDescription()` — Safari enforces this strictly.
+
+## setTimeout Callbacks Are Not User Gestures for Safari Autoplay
+**Pattern:** WebRTC fails in Safari, 5-second timeout fires, creates a new `<audio>` element with `src` and calls `.play()`. Safari blocks this with `NotAllowedError` because `setTimeout` callbacks are not user gesture contexts. The `.catch(() => {})` silently swallows the error.
+**Rule:** If a fallback audio path might execute outside a user gesture, pre-create the `<audio>` element during the original gesture (click handler) and keep a reference. In the timeout, only set `.src` on the pre-existing element. Or restructure so the fallback also runs within a user-initiated event.
+
+## PipeWire SUSPENDED Sinks Don't Expose Ports to pw-link
+**Pattern:** RAOP sinks discovered by `module-raop-discover` sit in SUSPENDED state. `pw-link -i` returns zero ports for SUSPENDED sinks, so `pw-link <source> <target>` fails with "No playback ports found." The sink exists in `pactl list short sinks` but is invisible to the linking tool.
+**Rule:** Before linking to a PipeWire sink that may be SUSPENDED, wake it with `pactl suspend-sink <name> 0`, then poll `pw-link -i` for the ports to appear (typically <200ms). Only then attempt `pw-link`.
+
+## PipeWire-Pulse "Entity exists" vs "Module already loaded"
+**Pattern:** `pactl load-module module-raop-discover` returns "Failure: Entity exists" on PipeWire-pulse when the module is already loaded. Older PulseAudio returns "Module already loaded." Code that only checks for the PulseAudio string treats PipeWire-pulse's response as an error.
+**Rule:** When detecting "already loaded" from `pactl load-module`, check for both `"already loaded"` and `"Entity exists"` to cover PulseAudio and PipeWire-pulse.

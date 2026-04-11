@@ -192,6 +192,14 @@ impl AirPlayManager {
             }
         };
 
+        // Wake the RAOP sink from SUSPENDED state so PipeWire creates its
+        // input ports. SUSPENDED sinks don't expose ports to `pw-link -i`,
+        // which causes the link step below to fail with "No playback ports".
+        if let Err(e) = activate_raop_sink(&sink_name).await {
+            warn!("Could not activate RAOP sink {}: {}", sink_name, e);
+            // Continue anyway — the sink might already be active
+        }
+
         // Create pw-link connections from the capture monitor to the RAOP sink
         let link_ids = match create_pw_links(NULL_SINK_NAME, &sink_name).await {
             Ok(ids) => ids,
@@ -307,7 +315,10 @@ impl AirPlayManager {
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 // Module might already be loaded
-                if stderr.contains("Module already loaded") || stderr.contains("already loaded") {
+                if stderr.contains("Module already loaded")
+                    || stderr.contains("already loaded")
+                    || stderr.contains("Entity exists")
+                {
                     self.raop_module_loaded = true;
                     debug!("RAOP discover module already loaded");
                 } else {
@@ -587,6 +598,50 @@ fn extract_pw_property(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Wake a RAOP sink from SUSPENDED state so PipeWire creates its input ports.
+///
+/// PipeWire SUSPENDED sinks don't expose playback ports to `pw-link -i`.
+/// `pactl suspend-sink <name> 0` transitions the sink to at least IDLE,
+/// which creates the ports needed for linking. We then poll `pw-link -i`
+/// briefly to confirm the ports are visible before returning.
+async fn activate_raop_sink(sink_name: &str) -> Result<(), String> {
+    let result = Command::new("pactl")
+        .args(["suspend-sink", sink_name, "0"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run pactl suspend-sink: {}", e))?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(format!("pactl suspend-sink failed: {}", stderr));
+    }
+
+    debug!("Activated RAOP sink: {}", sink_name);
+
+    // Poll for ports to appear (up to 2 seconds)
+    for attempt in 0..10 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let ports = find_pw_ports("-i", sink_name, "playback").await;
+        if let Ok(ref p) = ports {
+            if !p.is_empty() {
+                debug!(
+                    "RAOP sink ports ready after {}ms: {:?}",
+                    attempt * 200,
+                    p
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    Err(format!(
+        "RAOP sink '{}' activated but ports did not appear within 2s",
+        sink_name
+    ))
 }
 
 /// Find a PipeWire RAOP sink matching the given AirPlay device.
