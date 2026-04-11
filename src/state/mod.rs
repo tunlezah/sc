@@ -117,6 +117,10 @@ pub struct TrackInfo {
     pub artist: String,
     pub album: String,
     pub duration_ms: u64,
+    /// Current playback position in milliseconds (from AVRCP).
+    /// Used to initialize the UI progress bar when joining a track mid-playback.
+    #[serde(default)]
+    pub position_ms: u64,
     pub track_number: Option<u32>,
     /// URL path for album artwork (e.g. "/api/artwork"), if available.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -306,13 +306,23 @@ impl AvrcpMonitor {
             }
         }
 
-        // Poll track info
+        // Poll track info and current position
         if let Ok(track_map) = proxy
             .get_property::<HashMap<String, OwnedValue>>("Track")
             .await
         {
             poll_succeeded = true;
             let mut track = parse_track_info(&track_map);
+
+            // Read the player's current Position (microseconds in BlueZ).
+            // This lets the UI start the progress bar at the right point
+            // when joining a track that's already partway through.
+            if let Some(ref mut t) = track {
+                if let Ok(pos_us) = proxy.get_property::<u32>("Position").await {
+                    t.position_ms = pos_us as u64;
+                }
+            }
+
             let changed = match (&self.last_track, &track) {
                 (None, None) => false,
                 (Some(_), None) | (None, Some(_)) => true,
@@ -371,6 +381,7 @@ pub fn parse_track_info(map: &HashMap<String, OwnedValue>) -> Option<TrackInfo> 
         artist: get_string_value(map, "Artist").unwrap_or_default(),
         album: get_string_value(map, "Album").unwrap_or_default(),
         duration_ms: get_u64_value(map, "Duration").unwrap_or(0),
+        position_ms: 0, // Set later from the player's Position property
         track_number: get_u32_value(map, "TrackNumber"),
         artwork_url: None, // Set later if artwork is available
     })

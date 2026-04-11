@@ -20,17 +20,22 @@ export class WebRTCClient {
   }
 
   async start(): Promise<void> {
-    // Create audio element synchronously during user gesture (click handler)
-    // so that Mobile Safari allows playback. If created later in an async
-    // callback (ontrack), the gesture context has expired and play() is blocked.
+    // Create audio element and call play() synchronously during the user
+    // gesture (click handler). Safari's autoplay policy requires play() to
+    // be called BEFORE any `await` — the first await breaks the synchronous
+    // gesture chain and subsequent play() calls are blocked as non-user-initiated.
     this.audioElement = document.createElement('audio');
     this.audioElement.autoplay = true;
     this.audioElement.setAttribute('playsinline', '');
     document.body.appendChild(this.audioElement);
 
-    // Safari requires AudioContext to be created AND resumed within the user
-    // gesture. Do this immediately — before any async work — to "unlock" the
-    // audio output. Keep the context alive so it stays unlocked.
+    // Prime the audio element NOW, before any async work. This must be the
+    // first interaction with the element and must happen synchronously in the
+    // gesture context. Without this, Safari blocks all subsequent play() calls.
+    this.audioElement.play().catch(() => {});
+
+    // Unlock AudioContext for Safari. This await may break the gesture chain,
+    // but the audio element is already primed above so playback will work.
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioCtx) {
@@ -41,12 +46,6 @@ export class WebRTCClient {
     } catch {
       // AudioContext not available — continue without it
     }
-
-    // Safari: call play() on the audio element NOW, within the user gesture,
-    // even though there's no source yet. This "primes" the element so that
-    // when srcObject is set later (in ontrack), playback starts automatically.
-    // Without this, Safari blocks play() in the async ontrack callback.
-    this.audioElement.play().catch(() => {});
 
     this.pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
