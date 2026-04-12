@@ -630,11 +630,7 @@ async fn activate_raop_sink(sink_name: &str) -> Result<(), String> {
         let ports = find_pw_ports("-i", sink_name, "playback").await;
         if let Ok(ref p) = ports {
             if !p.is_empty() {
-                debug!(
-                    "RAOP sink ports ready after {}ms: {:?}",
-                    attempt * 200,
-                    p
-                );
+                debug!("RAOP sink ports ready after {}ms: {:?}", attempt * 200, p);
                 return Ok(());
             }
         }
