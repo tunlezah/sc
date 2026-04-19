@@ -806,7 +806,7 @@ body {
   text-align: right;
 }
 
-/* Device list controls (BLE toggle + legend) */
+/* Device list controls (filter toggles + legend) */
 .device-controls {
   display: flex;
   align-items: center;
@@ -814,6 +814,13 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.device-toggles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .device-ble-toggle {

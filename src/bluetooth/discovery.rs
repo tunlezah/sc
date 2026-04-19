@@ -142,7 +142,15 @@ pub async fn refresh_classification(
 }
 
 /// Update a device's display name and notify the frontend.
+///
+/// Refuses empty strings or MAC-shaped aliases — both indicate that BlueZ
+/// hasn't resolved the friendly name yet and overwriting a previously
+/// resolved name with one of those would regress the UI from "MyPhone"
+/// back to a raw MAC address.
 pub async fn update_device_name(state: &AppStateHandle, address: &str, name: String) {
+    if name.is_empty() || is_mac_address(&name) {
+        return;
+    }
     let mut app = state.state.write().await;
     if let Some(device) = app.devices.get_mut(address) {
         if device.name != name {
@@ -537,5 +545,30 @@ mod tests {
             }
             _ => panic!("Expected DeviceStateChanged event"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_update_device_name_rejects_empty_and_mac() {
+        // Guard against the fast-poll race where alias() can momentarily
+        // return "" or a MAC-shaped fallback after the device already has
+        // a real name. Overwriting with either would regress the UI.
+        let state = AppStateHandle::new(crate::state::config::Config::default());
+
+        handle_device_discovered(
+            &state,
+            "AA:BB:CC:DD:EE:FF".into(),
+            "MyPhone".into(),
+            None,
+            vec![],
+            DiscoverySignals::default(),
+        )
+        .await;
+
+        update_device_name(&state, "AA:BB:CC:DD:EE:FF", "".into()).await;
+        update_device_name(&state, "AA:BB:CC:DD:EE:FF", "AA-BB-CC-DD-EE-FF".into()).await;
+        update_device_name(&state, "AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF".into()).await;
+
+        let app = state.state.read().await;
+        assert_eq!(app.devices.get("AA:BB:CC:DD:EE:FF").unwrap().name, "MyPhone");
     }
 }
