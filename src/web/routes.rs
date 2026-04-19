@@ -106,6 +106,7 @@ pub fn create_router(app: AppRouter) -> Router {
         .route("/api/bluetooth/disconnect", post(post_disconnect))
         .route("/api/bluetooth/device", delete(delete_device))
         .route("/api/bluetooth/name", post(post_name))
+        .route("/api/bluetooth/resolve-names", post(post_resolve_names))
         // EQ
         .route("/api/eq", get(get_eq))
         .route("/api/eq", post(post_eq))
@@ -235,6 +236,21 @@ async fn post_name(
         .bt_cmd_tx
         .send(BluetoothCommand::SetName { name: body.name })
         .await;
+    ok_response()
+}
+
+/// Trigger an active HCI Remote-Name-Request for every currently-unnamed
+/// device. The actual work is fire-and-forget on background tasks; the
+/// endpoint returns immediately.
+async fn post_resolve_names(State(app): State<AppRouter>) -> Json<OkResponse> {
+    if app
+        .bt_cmd_tx
+        .send(BluetoothCommand::ResolveNames)
+        .await
+        .is_err()
+    {
+        tracing::error!("Bluetooth manager not running — resolve-names dropped");
+    }
     ok_response()
 }
 

@@ -13,10 +13,22 @@ use crate::state::{AppStateHandle, BluetoothStatus, SystemEvent};
 pub enum BluetoothCommand {
     StartScan,
     StopScan,
-    Connect { address: String },
-    Disconnect { address: String },
-    Remove { address: String },
-    SetName { name: String },
+    Connect {
+        address: String,
+    },
+    Disconnect {
+        address: String,
+    },
+    Remove {
+        address: String,
+    },
+    SetName {
+        name: String,
+    },
+    /// Fire an active HCI Remote-Name-Request against every device in state
+    /// whose friendly name hasn't been resolved yet. Works even on BR/EDR
+    /// devices that never sent their name in the advertising / EIR payload.
+    ResolveNames,
 }
 
 pub struct BluetoothManager {
@@ -425,6 +437,25 @@ impl BluetoothManager {
                     warn!("Failed to persist device name to config: {}", e);
                 }
             }
+            BluetoothCommand::ResolveNames => {
+                let targets: Vec<String> = {
+                    let app = self.state.state.read().await;
+                    app.devices
+                        .values()
+                        .filter(|d| d.name.is_empty() || discovery::is_mac_address(&d.name))
+                        .map(|d| d.address.clone())
+                        .collect()
+                };
+                let adapter_name = self.state.state.read().await.config.adapter.clone();
+                info!(
+                    "Active name resolution requested: {} unnamed device(s) on {}",
+                    targets.len(),
+                    adapter_name
+                );
+                for address in targets {
+                    spawn_active_name_request(self.state.clone(), adapter_name.clone(), address);
+                }
+            }
         }
     }
 
@@ -670,6 +701,126 @@ impl futures::Stream for FreshDiscoveryStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
+}
+
+/// Cap on concurrent active HCI Remote-Name-Requests. Each request holds a
+/// BT baseband slot; a handful at a time is a safe middle ground between
+/// "one at a time takes forever" and "flood the radio and stall scanning".
+const ACTIVE_NAME_REQUEST_CONCURRENCY: usize = 3;
+/// Per-request timeout for `hcitool name`. The HCI Remote-Name-Request
+/// procedure itself is bounded (~5.1s default page timeout); we give it a
+/// bit of headroom for process startup.
+const ACTIVE_NAME_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(7);
+
+/// Global semaphore for active name requests. Created on first use and
+/// shared across all spawned tasks so concurrency is capped process-wide
+/// even if the user clicks "Identify" multiple times.
+fn active_name_request_semaphore() -> std::sync::Arc<tokio::sync::Semaphore> {
+    use std::sync::OnceLock;
+    static SEM: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    SEM.get_or_init(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(ACTIVE_NAME_REQUEST_CONCURRENCY))
+    })
+    .clone()
+}
+
+/// Spawn a one-shot task that fires an active HCI Remote-Name-Request via
+/// `hcitool name <MAC>` and updates the device name on success.
+///
+/// Why hcitool: BlueZ's D-Bus `Device1` interface only exposes a passive
+/// `Alias` property — there is no "fetch the name now" method. At the HCI
+/// layer the Remote-Name-Request procedure fetches the name without
+/// pairing or a full connection; `hcitool name` is the canonical
+/// user-space wrapper around that command and is shipped with `bluez`
+/// itself. Access only requires membership in the `bluetooth` group,
+/// which the installer already grants to the service user.
+///
+/// The task self-terminates after the timeout. On success it calls
+/// `discovery::update_device_name` (which refuses empty / MAC-shaped
+/// results, so a spurious response can't regress a previously-resolved
+/// name).
+fn spawn_active_name_request(state: AppStateHandle, adapter_name: String, address: String) {
+    let sem = active_name_request_semaphore();
+    tokio::spawn(async move {
+        // Bail early if the name already got resolved by the passive poller
+        // between the click and this task starting.
+        {
+            let app = state.state.read().await;
+            if let Some(d) = app.devices.get(&address) {
+                if !d.name.is_empty() && !discovery::is_mac_address(&d.name) {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
+        let _permit = match sem.acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        // Re-check after acquiring the permit — another task may have
+        // resolved the name while we were queued behind the semaphore.
+        {
+            let app = state.state.read().await;
+            if let Some(d) = app.devices.get(&address) {
+                if !d.name.is_empty() && !discovery::is_mac_address(&d.name) {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
+        let cmd = tokio::process::Command::new("hcitool")
+            .args(["-i", &adapter_name, "name", &address])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        let output = match tokio::time::timeout(ACTIVE_NAME_REQUEST_TIMEOUT, cmd).await {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                // hcitool missing or unexecutable — log once per invocation
+                // at debug so the passive poller still drives resolution.
+                debug!(
+                    "hcitool not runnable ({}); active name request for {} skipped",
+                    e, address
+                );
+                return;
+            }
+            Err(_) => {
+                debug!(
+                    "hcitool name {} timed out after {:?}",
+                    address, ACTIVE_NAME_REQUEST_TIMEOUT
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            debug!(
+                "hcitool name {} exited {:?}: {}",
+                address,
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            return;
+        }
+
+        let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if resolved.is_empty() || discovery::is_mac_address(&resolved) {
+            debug!("hcitool name {} returned no friendly name", address);
+            return;
+        }
+
+        info!(
+            "Active name resolution for {}: '{}' (via hcitool)",
+            address, resolved
+        );
+        discovery::update_device_name(&state, &address, resolved).await;
+    });
 }
 
 /// Per-device fast name-resolution task.

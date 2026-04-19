@@ -95,6 +95,25 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
     }
   };
 
+  // Active name-resolution: fires hcitool Remote-Name-Requests against every
+  // device in the list that's still showing a MAC. Times out server-side
+  // (~7s per device, 3 in parallel) so the spinner is a coarse progress hint.
+  const [identifying, setIdentifying] = useState(false);
+  const handleIdentify = () => {
+    if (identifying) return;
+    setIdentifying(true);
+    api.resolveDeviceNames()
+      .catch((err) => console.error('Identify request failed:', err))
+      .finally(() => {
+        // The server streams names back via websocket; give it a budget
+        // matching the per-device timeout (7s) × bounded concurrency (3)
+        // for a rough worst-case before letting the user click again.
+        setTimeout(() => setIdentifying(false), 8000);
+      });
+  };
+
+  const unnamedCount = devices.filter((d) => !d.name || d.name.trim() === '').length;
+
   const handleLineInToggle = async () => {
     if (lineInActive) {
       await api.deactivateLineIn();
@@ -152,6 +171,19 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
             <div class="output-panel-header">
               <button class="btn btn-sm btn-primary" onClick={handleScan}>
                 {status === 'scanning' ? 'Stop Scan' : 'Scan'}
+              </button>
+              <button
+                class="btn btn-sm btn-secondary"
+                style={{ marginLeft: '6px' }}
+                onClick={handleIdentify}
+                disabled={identifying || unnamedCount === 0}
+                title="Issue an active HCI Remote-Name-Request against every device still showing a MAC address. Works on classic Bluetooth devices that never broadcast their name, without requiring pairing."
+              >
+                {identifying
+                  ? 'Identifying...'
+                  : unnamedCount > 0
+                    ? `Identify (${unnamedCount})`
+                    : 'Identify'}
               </button>
               {status.startsWith('error') && (
                 <span class="badge badge-disconnected" style={{ marginLeft: '8px', fontSize: '0.7rem' }}>

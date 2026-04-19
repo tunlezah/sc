@@ -23,6 +23,7 @@ export const connectDevice = (address: string) => request<{ ok: boolean }>('POST
 export const disconnectDevice = (address: string) => request<{ ok: boolean }>('POST', '/api/bluetooth/disconnect', { address });
 export const removeDevice = (address: string) => request<{ ok: boolean }>('DELETE', '/api/bluetooth/device', { address });
 export const setDeviceName = (name: string) => request<{ ok: boolean }>('POST', '/api/bluetooth/name', { name });
+export const resolveDeviceNames = () => request<{ ok: boolean }>('POST', '/api/bluetooth/resolve-names');
 
 // EQ
 export const getEq = () => request<{ bands: EqBand[]; enabled: boolean }>('GET', '/api/eq');
