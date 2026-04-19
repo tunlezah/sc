@@ -2808,7 +2808,7 @@ dependencies = [
 
 [[package]]
 name = "soundsync"
-version = "2.9.9"
+version = "2.9.10"
 dependencies = [
  "axum",
  "bluer",
