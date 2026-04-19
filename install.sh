@@ -12,7 +12,7 @@ PREBUILT_BINARY="${REPO_DIR}/soundsync"
 RELEASE_BINARY="${REPO_DIR}/target/release/soundsync"
 WEBUI_DIST="${REPO_DIR}/webui/dist"
 NODE_VERSION="22"
-VERSION="2.9.10"
+VERSION="2.9.11"
 VERSION_FILE="${INSTALL_DIR}/.soundsync-version"
 
 # Colors
@@ -166,7 +166,7 @@ configure_bluetooth() {
     cat > "${BT_CONF}" << 'BTCONF'
 [General]
 Class = 0x240414
-Name = SoundSync
+Name = Soundy
 DiscoverableTimeout = 0
 PairableTimeout = 0
 Discoverable = true

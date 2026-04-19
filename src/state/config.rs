@@ -15,7 +15,7 @@ impl Default for Config {
         Self {
             port: 8080,
             adapter: "hci0".to_string(),
-            device_name: "SoundSync".to_string(),
+            device_name: "Soundy".to_string(),
             auto_pair: true,
             max_devices: 1,
         }
@@ -143,7 +143,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.port, 8080);
         assert_eq!(config.adapter, "hci0");
-        assert_eq!(config.device_name, "SoundSync");
+        assert_eq!(config.device_name, "Soundy");
         assert!(config.auto_pair);
         assert_eq!(config.max_devices, 1);
     }
@@ -178,7 +178,7 @@ port = 3000
         assert_eq!(config.port, 3000);
         // Other fields should retain defaults
         assert_eq!(config.adapter, "hci0");
-        assert_eq!(config.device_name, "SoundSync");
+        assert_eq!(config.device_name, "Soundy");
         assert!(config.auto_pair);
         assert_eq!(config.max_devices, 1);
     }

@@ -11,7 +11,7 @@ const defaultState: AppState = {
   playback_status: 'unknown',
   line_in_active: false,
   line_in_available: false,
-  device_name: 'SoundSync',
+  device_name: 'Soundy',
   cast_devices: [],
   cast_active: null,
   airplay_devices: [],
