@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::bluetooth::agent;
 use crate::bluetooth::constants;
@@ -174,7 +174,7 @@ impl BluetoothManager {
 
                     event = stream.next() => {
                         match event {
-                            Some(evt) => self.handle_adapter_event(&adapter, evt).await,
+                            Some(evt) => self.handle_adapter_event(&adapter, &session, evt).await,
                             None => {
                                 warn!("Discovery stream ended");
                                 discover = None;
@@ -265,7 +265,12 @@ impl BluetoothManager {
         }
     }
 
-    async fn handle_adapter_event(&self, adapter: &bluer::Adapter, event: bluer::AdapterEvent) {
+    async fn handle_adapter_event(
+        &self,
+        adapter: &bluer::Adapter,
+        session: &bluer::Session,
+        event: bluer::AdapterEvent,
+    ) {
         match event {
             bluer::AdapterEvent::DeviceAdded(addr) => match adapter.device(addr) {
                 Ok(device) => {
@@ -286,15 +291,31 @@ impl BluetoothManager {
 
                     let signals = collect_discovery_signals(&device).await;
 
+                    let address_str = addr.to_string();
+                    let needs_name_resolution = name.is_empty();
+
                     discovery::handle_device_discovered(
                         &self.state,
-                        addr.to_string(),
+                        address_str.clone(),
                         name,
                         rssi,
                         uuids,
                         signals,
                     )
                     .await;
+
+                    // BlueZ resolves the GAP friendly name asynchronously;
+                    // the regular 500ms property poll eventually picks it up,
+                    // but users can stare at a bare MAC for several seconds.
+                    // Kick off a per-device fast poll that retires once the
+                    // name resolves or the attempt budget runs out.
+                    if needs_name_resolution {
+                        spawn_name_resolution(
+                            self.state.clone(),
+                            session.clone(),
+                            address_str,
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!("Failed to get discovered device {}: {}", addr, e);
@@ -443,9 +464,15 @@ impl BluetoothManager {
 
                     // Re-read device alias to pick up names that BlueZ
                     // resolves after the initial DeviceAdded signal.
+                    // update_device_name itself rejects empty / MAC-shaped
+                    // aliases, but skipping the call upfront avoids a
+                    // pointless write-lock on every poll tick.
                     if let Some(ref name) = current_name {
                         if let Ok(alias) = device.alias().await {
-                            if !discovery::is_mac_address(&alias) && alias != *name {
+                            if !alias.is_empty()
+                                && !discovery::is_mac_address(&alias)
+                                && alias != *name
+                            {
                                 discovery::update_device_name(&self.state, &address, alias).await;
                             }
                         }
@@ -647,6 +674,76 @@ impl futures::Stream for FreshDiscoveryStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
+}
+
+/// Per-device fast name-resolution task.
+///
+/// BlueZ populates the `Alias` property asynchronously after `DeviceAdded`
+/// fires. The main 500ms property poll picks names up eventually, but on
+/// busy radio environments it can take 5–10s — long enough that users see
+/// a wall of MAC addresses and can't tell their device apart. This task
+/// polls just `alias()` for a single device on a faster cadence so the
+/// friendly name appears within ~1s of becoming available.
+///
+/// Bails early when:
+/// * the device disappeared from app state (Remove / scan reset),
+/// * the name was already resolved by another path (main poll, re-scan),
+/// * BlueZ returns a non-empty, non-MAC alias (success — call
+///   `update_device_name` and exit).
+///
+/// `update_device_name` itself rejects empty / MAC-shaped aliases, so a
+/// transient bad read can't regress a previously-resolved name.
+fn spawn_name_resolution(state: AppStateHandle, session: bluer::Session, address: String) {
+    tokio::spawn(async move {
+        let adapter_name = state.state.read().await.config.adapter.clone();
+        let adapter = match session.adapter(&adapter_name) {
+            Ok(a) => a,
+            Err(e) => {
+                debug!(
+                    "Name resolution: adapter {} unavailable for {}: {}",
+                    adapter_name, address, e
+                );
+                return;
+            }
+        };
+        let parsed_addr: bluer::Address = match address.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                debug!("Name resolution: bad address {}: {}", address, e);
+                return;
+            }
+        };
+        let device = match adapter.device(parsed_addr) {
+            Ok(d) => d,
+            Err(e) => {
+                debug!("Name resolution: device {} unavailable: {}", address, e);
+                return;
+            }
+        };
+
+        for _ in 0..constants::NAME_RESOLUTION_MAX_ATTEMPTS {
+            tokio::time::sleep(constants::NAME_RESOLUTION_POLL).await;
+
+            // Check device presence + current name in a single read.
+            let current_name = {
+                let app = state.state.read().await;
+                match app.devices.get(&address) {
+                    Some(d) => d.name.clone(),
+                    None => return,
+                }
+            };
+            if !current_name.is_empty() {
+                return;
+            }
+
+            if let Ok(alias) = device.alias().await {
+                if !alias.is_empty() && !discovery::is_mac_address(&alias) {
+                    discovery::update_device_name(&state, &address, alias).await;
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// Stop Bluetooth discovery via direct D-Bus call.

@@ -15,6 +15,21 @@ interface AudioInputProps {
 }
 
 const SHOW_BLE_KEY = 'soundsync-show-ble';
+const HIDE_UNNAMED_KEY = 'soundsync-hide-unnamed';
+
+/// Audio-capable device — stays visible even if BlueZ hasn't resolved a
+/// friendly name yet, because the user likely wants to see it.
+function isAudioCandidate(d: DeviceInfo): boolean {
+  return d.has_a2dp || d.is_a2dp_source;
+}
+
+/// A device is "identifiable" if the user can tell what it is: either it
+/// has a friendly name, or it advertises an audio profile (named "Audio
+/// Source" / "Audio" in the UI). Bare MAC-only non-audio devices are the
+/// noise we filter out.
+function isIdentifiable(d: DeviceInfo): boolean {
+  return d.name.trim() !== '' || isAudioCandidate(d);
+}
 
 function stateBadge(state: DeviceState) {
   const labels: Record<DeviceState, { label: string; cls: string }> = {
@@ -41,10 +56,20 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
     const stored = localStorage.getItem(SHOW_BLE_KEY);
     return stored === null ? true : stored !== 'false';
   });
+  // Default ON for new users: the common complaint is a wall of MAC-only
+  // mystery devices. Previously-saved preferences still win.
+  const [hideUnnamed, setHideUnnamed] = useState<boolean>(() => {
+    const stored = localStorage.getItem(HIDE_UNNAMED_KEY);
+    return stored === null ? true : stored === 'true';
+  });
 
   useEffect(() => {
     localStorage.setItem(SHOW_BLE_KEY, showBle ? 'true' : 'false');
   }, [showBle]);
+
+  useEffect(() => {
+    localStorage.setItem(HIDE_UNNAMED_KEY, hideUnnamed ? 'true' : 'false');
+  }, [hideUnnamed]);
 
   // Clear "Connecting..." for devices that have progressed past discovered/paired/disconnected
   useEffect(() => {
@@ -78,8 +103,9 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
     }
   };
 
-  // BLE filter first (hide noise), then text search.
-  const visible = showBle ? devices : devices.filter((d) => d.type !== 'ble');
+  // BLE filter first (hide noise), then identifiability filter, then text search.
+  const afterBle = showBle ? devices : devices.filter((d) => d.type !== 'ble');
+  const visible = hideUnnamed ? afterBle.filter(isIdentifiable) : afterBle;
   const filtered = filter
     ? visible.filter((d) => {
         const q = filter.toLowerCase();
@@ -87,7 +113,9 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
       })
     : visible;
 
-  const bleHiddenCount = showBle ? 0 : devices.length - visible.length;
+  const bleHiddenCount = showBle ? 0 : devices.length - afterBle.length;
+  const unnamedHiddenCount = hideUnnamed ? afterBle.length - visible.length : 0;
+  const totalHiddenCount = bleHiddenCount + unnamedHiddenCount;
 
   const hasActiveBt = devices.some(d =>
     d.state === 'connected' || d.state === 'audio_active' ||
@@ -109,7 +137,7 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
             class={`output-tab ${activeTab === 'bluetooth' ? 'active' : ''}`}
             onClick={() => setActiveTab('bluetooth')}
           >
-            Bluetooth ({visible.length}{bleHiddenCount > 0 ? ` / ${devices.length}` : ''})
+            Bluetooth ({visible.length}{totalHiddenCount > 0 ? ` / ${devices.length}` : ''})
           </button>
           <button
             class={`output-tab ${activeTab === 'line_in' ? 'active' : ''}`}
@@ -133,15 +161,29 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
             </div>
 
             <div class="device-controls">
-              <label class="device-ble-toggle" title="Show Bluetooth Low Energy devices in the list">
-                <button
-                  type="button"
-                  class={`toggle toggle-sm ${showBle ? 'active' : ''}`}
-                  aria-pressed={showBle}
-                  onClick={() => setShowBle(!showBle)}
-                />
-                <span>Show BLE Devices</span>
-              </label>
+              <div class="device-toggles">
+                <label class="device-ble-toggle" title="Show Bluetooth Low Energy devices in the list">
+                  <button
+                    type="button"
+                    class={`toggle toggle-sm ${showBle ? 'active' : ''}`}
+                    aria-pressed={showBle}
+                    onClick={() => setShowBle(!showBle)}
+                  />
+                  <span>Show BLE Devices</span>
+                </label>
+                <label
+                  class="device-ble-toggle"
+                  title="Hide devices with no friendly name and no detected audio profile. Devices advertising an audio profile stay visible even before BlueZ resolves their name."
+                >
+                  <button
+                    type="button"
+                    class={`toggle toggle-sm ${hideUnnamed ? 'active' : ''}`}
+                    aria-pressed={hideUnnamed}
+                    onClick={() => setHideUnnamed(!hideUnnamed)}
+                  />
+                  <span>Hide Unnamed Devices</span>
+                </label>
+              </div>
               <div class="device-legend" aria-hidden="true">
                 <span class="device-legend-item">
                   <span class="device-legend-swatch device-legend-swatch--classic" />
@@ -171,7 +213,11 @@ export function AudioInput({ devices, activeDevice: _activeDevice, status, lineI
                 {devices.length === 0
                   ? 'No devices found. Start scanning to discover Bluetooth devices.'
                   : visible.length === 0
-                    ? `BLE devices hidden (${bleHiddenCount}). Toggle "Show BLE Devices" to see them.`
+                    ? unnamedHiddenCount > 0 && bleHiddenCount === 0
+                      ? `${unnamedHiddenCount} unnamed device${unnamedHiddenCount === 1 ? '' : 's'} hidden. Toggle "Hide Unnamed Devices" to see them, or wait a few seconds for names to resolve.`
+                      : bleHiddenCount > 0 && unnamedHiddenCount === 0
+                        ? `BLE devices hidden (${bleHiddenCount}). Toggle "Show BLE Devices" to see them.`
+                        : `${totalHiddenCount} device${totalHiddenCount === 1 ? '' : 's'} hidden by filters. Toggle "Show BLE Devices" or "Hide Unnamed Devices" to see them.`
                     : 'No devices match your search.'}
               </div>
             ) : (

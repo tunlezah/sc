@@ -16,6 +16,15 @@ pub const DEVICE_PROPS_POLL: Duration = Duration::from_millis(500);
 pub const AVRCP_POLL_ACTIVE: Duration = Duration::from_millis(250);
 pub const AVRCP_POLL_IDLE: Duration = Duration::from_millis(2000);
 
+/// Per-device fast name-resolution poll interval. Spawned once when a device
+/// is first discovered without a friendly name; faster than DEVICE_PROPS_POLL
+/// so users don't stare at MAC addresses while BlueZ resolves the GAP name.
+pub const NAME_RESOLUTION_POLL: Duration = Duration::from_millis(250);
+/// Upper bound on fast name-resolution attempts (24 × 250ms ≈ 6s). After
+/// this, the regular DEVICE_PROPS_POLL loop continues to pick up names on
+/// slow-to-respond devices.
+pub const NAME_RESOLUTION_MAX_ATTEMPTS: u32 = 24;
+
 /// Convert a D-Bus device path to a MAC address.
 /// e.g. `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF` → `AA:BB:CC:DD:EE:FF`
 #[allow(dead_code)]
