@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(snap.playback_status, PlaybackStatus::Unknown);
         assert!(!snap.line_in_active);
         assert!(!snap.line_in_available);
-        assert_eq!(snap.device_name, "SoundSync");
+        assert_eq!(snap.device_name, "Soundy");
         assert!(snap.cast_devices.is_empty());
         assert!(snap.cast_active.is_none());
         assert!(snap.airplay_devices.is_empty());

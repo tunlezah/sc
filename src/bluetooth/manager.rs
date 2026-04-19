@@ -108,8 +108,34 @@ impl BluetoothManager {
 
         let device_name = self.state.state.read().await.config.device_name.clone();
         if let Err(e) = adapter.set_alias(device_name.clone()).await {
-            warn!("Failed to set alias: {}", e);
+            // Promoted to error! because a silent set_alias failure in the
+            // past caused an A2DP source (AT-SB727 turntable) to reject us —
+            // the adapter was advertising the hostname instead of the
+            // configured alias, with no visible diagnostic.
+            error!(
+                "Failed to set adapter alias '{}' on {}: {}",
+                device_name, adapter_name, e
+            );
         }
+
+        // Force the Class of Device to "Audio/Video → HiFi Audio Device"
+        // (0x240414). BlueZ 5.x no longer honours `Class = ...` in
+        // /etc/bluetooth/main.conf and bluer 0.17 exposes no setter on
+        // Adapter1, so the adapter starts out advertising "Computer/Laptop".
+        // A2DP source devices filter candidates by CoD and skip anything
+        // that doesn't look like a sink — which is exactly why an
+        // Audio-Technica AT-SB727 could see the adapter during inquiry
+        // yet never try to pair with it. hciconfig is the canonical
+        // user-space wrapper for the HCI Write_Class_of_Device command
+        // and ships with the same bluez package as the daemon.
+        set_adapter_class_of_device(&adapter_name).await;
+
+        // Belt-and-braces: also write the HCI-level local name to match
+        // the Alias. On every BlueZ I've seen Alias takes precedence in
+        // EIR, but there are reports of edge-case firmwares reading the
+        // raw HCI name instead — hciconfig `name` uses HCI
+        // Write_Local_Name, cheap insurance.
+        set_adapter_hci_name(&adapter_name, &device_name).await;
 
         if let Err(e) = adapter.set_discoverable_timeout(0).await {
             warn!("Failed to set discoverable timeout: {}", e);
@@ -821,6 +847,111 @@ fn spawn_active_name_request(state: AppStateHandle, adapter_name: String, addres
         );
         discovery::update_device_name(&state, &address, resolved).await;
     });
+}
+
+/// Class of Device value advertised by SoundSync: Audio/Video major class
+/// (0x04), HiFi Audio Device minor class (0x05), with Rendering + Audio
+/// service bits. Matches the CoD most commercial Bluetooth speakers emit,
+/// which is what A2DP source devices look for during inquiry selection.
+const ADAPTER_COD: &str = "0x240414";
+/// Bounded timeout for the hciconfig calls. The HCI Write_Class_of_Device
+/// and Write_Local_Name commands are near-instant; 5 s is generous.
+const HCICONFIG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Force the adapter's Class of Device to [`ADAPTER_COD`] by shelling out
+/// to `hciconfig`. Logs and swallows errors — if hciconfig is missing or
+/// exits non-zero we still want SoundSync to keep running, but the user
+/// needs to know why A2DP sources might refuse to pair.
+async fn set_adapter_class_of_device(adapter_name: &str) {
+    let adapter = adapter_name.to_string();
+    let result = tokio::time::timeout(
+        HCICONFIG_TIMEOUT,
+        tokio::process::Command::new("hciconfig")
+            .args([&adapter, "class", ADAPTER_COD])
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => {
+            info!(
+                "Adapter {} Class of Device set to {} (Audio/Video → HiFi)",
+                adapter_name, ADAPTER_COD
+            );
+        }
+        Ok(Ok(output)) => {
+            warn!(
+                "hciconfig {} class {} exited {:?}: {}. \
+                 A2DP sources may refuse to pair because the adapter \
+                 advertises a non-audio CoD. Is the service user in the \
+                 `bluetooth` group?",
+                adapter_name,
+                ADAPTER_COD,
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(Err(e)) => {
+            warn!(
+                "Could not run hciconfig to set Class of Device: {} \
+                 (install `bluez` or add the service user to the `bluetooth` \
+                 group). A2DP sources may not find this adapter.",
+                e
+            );
+        }
+        Err(_) => {
+            warn!(
+                "hciconfig {} class {} timed out after {:?}",
+                adapter_name, ADAPTER_COD, HCICONFIG_TIMEOUT
+            );
+        }
+    }
+}
+
+/// Force the HCI-level local name via `hciconfig <adapter> name <name>`.
+/// `adapter.set_alias(...)` handles the Adapter1.Alias D-Bus property which
+/// BlueZ uses in EIR responses, but some BT source firmwares read the raw
+/// HCI name instead. Keeping both in sync is cheap insurance.
+async fn set_adapter_hci_name(adapter_name: &str, device_name: &str) {
+    let adapter = adapter_name.to_string();
+    let name = device_name.to_string();
+    let result = tokio::time::timeout(
+        HCICONFIG_TIMEOUT,
+        tokio::process::Command::new("hciconfig")
+            .args([&adapter, "name", &name])
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => {
+            info!(
+                "Adapter {} HCI-level name set to '{}'",
+                adapter_name, device_name
+            );
+        }
+        Ok(Ok(output)) => {
+            debug!(
+                "hciconfig {} name '{}' exited {:?}: {} (Alias path still in effect)",
+                adapter_name,
+                device_name,
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(Err(e)) => {
+            debug!(
+                "Could not run hciconfig to set HCI name: {} (Alias path still in effect)",
+                e
+            );
+        }
+        Err(_) => {
+            debug!(
+                "hciconfig {} name timed out after {:?}",
+                adapter_name, HCICONFIG_TIMEOUT
+            );
+        }
+    }
 }
 
 /// Per-device fast name-resolution task.
