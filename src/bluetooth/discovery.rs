@@ -569,6 +569,9 @@ mod tests {
         update_device_name(&state, "AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF".into()).await;
 
         let app = state.state.read().await;
-        assert_eq!(app.devices.get("AA:BB:CC:DD:EE:FF").unwrap().name, "MyPhone");
+        assert_eq!(
+            app.devices.get("AA:BB:CC:DD:EE:FF").unwrap().name,
+            "MyPhone"
+        );
     }
 }

@@ -310,11 +310,7 @@ impl BluetoothManager {
                     // Kick off a per-device fast poll that retires once the
                     // name resolves or the attempt budget runs out.
                     if needs_name_resolution {
-                        spawn_name_resolution(
-                            self.state.clone(),
-                            session.clone(),
-                            address_str,
-                        );
+                        spawn_name_resolution(self.state.clone(), session.clone(), address_str);
                     }
                 }
                 Err(e) => {
