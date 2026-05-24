@@ -50,6 +50,9 @@ BT_POWERED=false; BT_DISCOVERABLE=false; BT_PAIRABLE=false; BT_CLASS=""
 PIPE_NULL_SINK=false; PIPE_EQ_SINK=false; PIPE_DEFAULT_SINK=""
 BT_SPA_INSTALLED=false; WP_A2DP_CONFIG=false; WP_A2DP_WRONG_FORMAT=false
 DBUS_BLUEZ_OK=false; CONFLICTING_AUDIO=false
+WP_SEAT_MON_DISABLED=false       # config disables monitor.bluez.seat-monitoring
+WP_USER_MGR_HAS_BT_GROUP=true    # user@.service process has bluetooth gid
+BT_HAS_A2DP_SINK_UUID=false      # adapter advertises 0x110b in SDP
 
 RUN_USER="$(whoami)"
 RUN_UID="$(id -u)"
@@ -114,6 +117,17 @@ if [[ -n "$BT_INFO" ]]; then
     [[ "$BT_POWERED" == "yes" ]] && ok "Powered" || fail "NOT powered"
     [[ "$BT_DISCOVERABLE" == "yes" ]] && ok "Discoverable" || fail "NOT discoverable"
     info "Class: $BT_CLASS"
+
+    # Check whether the adapter actually advertises A2DP Sink (0x110b).
+    # This is the single most authoritative test for "iOS will see this as
+    # a speaker". If absent, WirePlumber's BlueZ5 monitor has not
+    # registered any MediaEndpoint with BlueZ.
+    if echo "$BT_INFO" | grep -q '0000110b-0000-1000-8000-00805f9b34fb'; then
+        ok "Adapter advertises Audio Sink (0x110b) — A2DP sink is live"
+        BT_HAS_A2DP_SINK_UUID=true
+    else
+        fail "Adapter does NOT advertise Audio Sink (0x110b) — devices will not show this as a speaker"
+    fi
 fi
 
 # SPA plugin
@@ -136,7 +150,33 @@ WP_MAJOR=$(echo "$WP_VER" | grep -oP '^\d+\.\d+' || echo "0.4")
 dpkg --compare-versions "$WP_MAJOR" ge "0.5" 2>/dev/null && WP_IS_05=true
 
 WP_A2DP_CONFIG=false
-if ! $WP_IS_05; then
+if $WP_IS_05; then
+    # WirePlumber 0.5+ uses SPA-JSON .conf files in wireplumber.conf.d.
+    # The CRITICAL line is `monitor.bluez.seat-monitoring = disabled`
+    # under wireplumber.profiles.main — without it, bluez.lua's
+    # createMonitor() is never called on a headless/SSH-only system
+    # (no seat-bound session ⇒ seat_state never == "active").
+    for f in /etc/wireplumber/wireplumber.conf.d/51-soundsync*.conf \
+             "$HOME/.config/wireplumber/wireplumber.conf.d/51-soundsync"*.conf; do
+        [[ -f "$f" ]] || continue
+        if grep -q 'bluez5.roles' "$f" 2>/dev/null; then
+            ok "WP A2DP properties present: $f"
+            WP_A2DP_CONFIG=true
+        fi
+        if grep -qE 'monitor\.bluez\.seat-monitoring\s*=\s*disabled' "$f" 2>/dev/null; then
+            ok "monitor.bluez.seat-monitoring = disabled (headless-safe)"
+            WP_SEAT_MON_DISABLED=true
+        fi
+    done
+    if ! $WP_SEAT_MON_DISABLED; then
+        fail "monitor.bluez.seat-monitoring is NOT disabled — bluez monitor will not start on headless systems"
+        info "  Add to /etc/wireplumber/wireplumber.conf.d/51-soundsync.conf:"
+        info "    wireplumber.profiles = { main = { monitor.bluez.seat-monitoring = disabled } }"
+    fi
+else
+    # WirePlumber 0.4.x uses Lua files in bluetooth.lua.d.
+    # The seat-monitoring gate didn't exist in 0.4.x — the bluez monitor
+    # always activated for the user session.
     for dir in /etc/wireplumber/bluetooth.lua.d "$HOME/.config/wireplumber/bluetooth.lua.d"; do
         for f in "$dir"/51-soundsync*; do
             if [[ -f "$f" ]] && grep -q "a2dp_sink" "$f" 2>/dev/null; then
@@ -149,9 +189,33 @@ if ! $WP_IS_05; then
             fi
         done
     done
+    # 0.4.x doesn't need the seat-monitoring override
+    WP_SEAT_MON_DISABLED=true
 fi
 if ! $WP_A2DP_CONFIG && ! $WP_A2DP_WRONG_FORMAT; then
     fail "No valid WP A2DP config found"
+fi
+
+# Verify the systemd USER MANAGER process actually has the bluetooth gid.
+# /etc/group can be correct while user@UID.service is running with stale
+# credentials (it was started before usermod -aG ran). WirePlumber inherits
+# from user@.service, so if that's missing the bluetooth group, the WP
+# BlueZ5 monitor will silently fail to register MediaEndpoints.
+BT_GID=$(getent group bluetooth 2>/dev/null | cut -d: -f3)
+USER_MGR_PID=$(systemctl show -p MainPID --value "user@${RUN_UID}.service" 2>/dev/null)
+WP_USER_MGR_HAS_BT_GROUP=false
+if [[ -n "$BT_GID" && -n "$USER_MGR_PID" && "$USER_MGR_PID" != "0" && -r "/proc/${USER_MGR_PID}/status" ]]; then
+    if awk -v g="$BT_GID" '/^Groups:/ { for (i=2;i<=NF;i++) if ($i==g) {found=1; exit} } END { exit found ? 0 : 1 }' "/proc/${USER_MGR_PID}/status"; then
+        ok "user@${RUN_UID}.service has 'bluetooth' group (gid ${BT_GID})"
+        WP_USER_MGR_HAS_BT_GROUP=true
+    else
+        fail "user@${RUN_UID}.service is MISSING the 'bluetooth' group (gid ${BT_GID})"
+        info "  /etc/group is correct, but the running user manager has stale credentials."
+        info "  WirePlumber inherits from user@.service and cannot register A2DP endpoints."
+        info "  Fix: reboot, or 'sudo loginctl terminate-user ${RUN_USER}' (kills sessions)"
+    fi
+else
+    info "Could not introspect user@${RUN_UID}.service credentials"
 fi
 
 # Conflicting servers
@@ -285,21 +349,56 @@ WPOVERRIDE
         fi
     fi
 
-    # F3: Fix WP config
-    if $WP_A2DP_WRONG_FORMAT || ! $WP_A2DP_CONFIG; then
+    # F3: Fix WP config (the primary A2DP-sink-on-headless fix)
+    #
+    # The seat-monitoring=disabled override is the difference between
+    # "iPhone pairs but shows no audio output" and a working A2DP speaker
+    # on WP 0.5+/Ubuntu 24.04+. Always rewrite the config to ensure it's
+    # current — cheap and idempotent.
+    if $WP_A2DP_WRONG_FORMAT || ! $WP_A2DP_CONFIG || ! $WP_SEAT_MON_DISABLED; then
         info "Fixing WirePlumber A2DP config..."
-        # Remove all old soundsync WP configs
-        for d in /etc/wireplumber/bluetooth.lua.d /etc/wireplumber/wireplumber.conf.d \
-                 "$HOME/.config/wireplumber/bluetooth.lua.d"; do
+        # Remove ALL stale soundsync WP configs from every known location,
+        # in either format. Avoids old configs shadowing the new one.
+        for d in /etc/wireplumber/bluetooth.lua.d \
+                 /etc/wireplumber/wireplumber.conf.d \
+                 "$HOME/.config/wireplumber/bluetooth.lua.d" \
+                 "$HOME/.config/wireplumber/wireplumber.conf.d"; do
             for f in "$d"/51-soundsync*; do
                 [[ -f "$f" ]] && run_root rm -f "$f" && ACTIONS+=("Removed $f")
             done
         done
 
-        # Write correct config (individual property assignment)
-        run_root mkdir -p /etc/wireplumber/bluetooth.lua.d
-        run_root tee /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua > /dev/null << 'WPLUA'
--- SoundSync: Enable A2DP sink role
+        if $WP_IS_05; then
+            run_root mkdir -p /etc/wireplumber/wireplumber.conf.d
+            run_root tee /etc/wireplumber/wireplumber.conf.d/51-soundsync.conf > /dev/null << 'WPCONF'
+# SoundSync — WirePlumber 0.5+ A2DP sink config (written by doctor)
+#
+# CRITICAL: monitor.bluez.seat-monitoring = disabled
+#   Stock bluez.lua only calls createMonitor() when WpLogind reports
+#   seat_state == "active", which requires a session bound to a seat
+#   (graphical login or local TTY). SSH-only sessions are "online" but
+#   never "active", so without this override the BlueZ monitor never
+#   starts on a headless box and no A2DP MediaEndpoints are registered.
+wireplumber.profiles = {
+    main = {
+        monitor.bluez.seat-monitoring = disabled
+    }
+}
+
+monitor.bluez.properties = {
+    bluez5.roles = [ a2dp_sink a2dp_source hfp_hf hfp_ag hsp_hs hsp_ag ]
+    bluez5.codecs = [ sbc aac ldac aptx aptx_hd ]
+    bluez5.enable-sbc-xq = true
+    bluez5.enable-msbc = false
+    bluez5.enable-hw-volume = true
+}
+WPCONF
+            ok "Wrote WP 0.5+ A2DP config (with seat-monitoring=disabled)"
+            ACTIONS+=("Wrote WP 0.5+ A2DP config")
+        else
+            run_root mkdir -p /etc/wireplumber/bluetooth.lua.d
+            run_root tee /etc/wireplumber/bluetooth.lua.d/51-soundsync.lua > /dev/null << 'WPLUA'
+-- SoundSync: Enable A2DP sink role (WirePlumber 0.4.x)
 -- Uses individual property assignment to preserve defaults (esp. with-logind)
 bluez_monitor.properties["bluez5.roles"] = "[ a2dp_sink ]"
 bluez_monitor.properties["bluez5.codecs"] = "[ sbc aac ldac aptx aptx_hd ]"
@@ -307,7 +406,22 @@ bluez_monitor.properties["bluez5.enable-sbc-xq"] = true
 bluez_monitor.properties["bluez5.enable-msbc"] = false
 bluez_monitor.properties["bluez5.enable-hw-volume"] = true
 WPLUA
-        ok "Wrote WP A2DP config"; ACTIONS+=("Wrote WP A2DP config")
+            ok "Wrote WP 0.4.x A2DP Lua config"
+            ACTIONS+=("Wrote WP 0.4.x A2DP Lua config")
+        fi
+    fi
+
+    # F3b: Fix stale user-manager credentials (missing bluetooth/audio groups).
+    # We add the user to the groups here (idempotent), but /etc/group changes
+    # don't propagate into already-running processes. The only fixes are
+    # `loginctl terminate-user` (kills sessions) or reboot. The doctor must
+    # not silently terminate the user's interactive session, so we WARN and
+    # let the user choose.
+    if ! $WP_USER_MGR_HAS_BT_GROUP; then
+        info "Adding ${RUN_USER} to audio,bluetooth groups (will only take effect on next login)..."
+        run_root usermod -aG audio,bluetooth "$RUN_USER" 2>/dev/null \
+            && ACTIONS+=("Added ${RUN_USER} to audio,bluetooth groups")
+        FAILURES+=("user@${RUN_UID}.service has stale credentials — REBOOT or 'sudo loginctl terminate-user ${RUN_USER}' required")
     fi
 
     # F3: Fix Bluetooth config
@@ -446,10 +560,22 @@ final_status "Bluetooth"             "systemctl is-active bluetooth"
 final_status "SoundSync"             "systemctl is-active soundsync"
 final_status "BT Discoverable"       "bluetoothctl show 2>/dev/null | grep -q 'Discoverable: yes'"
 final_status "libspa-0.2-bluetooth"  "find /usr/lib -path '*/spa-0.2/bluez5' -type d 2>/dev/null | grep -q ."
+final_status "WP seat-monitoring=disabled" "grep -qE 'monitor\.bluez\.seat-monitoring\\s*=\\s*disabled' /etc/wireplumber/wireplumber.conf.d/51-soundsync.conf 2>/dev/null"
+final_status "user@.service has 'bluetooth' grp" "awk -v g=\"$(getent group bluetooth | cut -d: -f3)\" '/^Groups:/ {for(i=2;i<=NF;i++) if(\$i==g){found=1; exit}} END {exit found ? 0 : 1}' /proc/\$(systemctl show -p MainPID --value user@${RUN_UID}.service)/status 2>/dev/null"
+final_status "Adapter advertises 0x110b" "bluetoothctl show 2>/dev/null | grep -q '0000110b-0000-1000-8000-00805f9b34fb'"
 final_status "BlueZ5 integration"    "journalctl --user -u wireplumber --no-pager --since '10 minutes ago' 2>/dev/null | grep -qi 'register.*media.*endpoint\|MediaEndpoint\|api.bluez5.enum'"
 final_status "Default sink → SS"     "pactl get-default-sink 2>/dev/null | grep -q soundsync"
 final_status "D-Bus session"         "test -S $XDG_RUNTIME_DIR/bus"
 final_status "PipeWire socket"       "test -S $XDG_RUNTIME_DIR/pipewire-0"
+
+# Surface FAILURES that require user action (reboot/relogin)
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "  ${RED}${BOLD}ACTION REQUIRED:${NC}"
+    for f in "${FAILURES[@]}"; do
+        echo -e "    ${RED}*${NC} $f"
+    done
+fi
 
 echo -e "${CYAN}${BOLD}═══════════════════════════════════════${NC}"
 echo -e "\nReport: $REPORT_DIR/"
