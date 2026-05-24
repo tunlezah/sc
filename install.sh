@@ -25,6 +25,31 @@ log()    { echo -e "${GREEN}[SoundSync]${NC} $*"; }
 warn()   { echo -e "${YELLOW}[WARNING]${NC} $*"; }
 error()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# Check whether the systemd user manager (user@UID.service) has the given
+# supplementary group in its effective credentials. Returns 0 if present.
+#
+# WHY: usermod -aG only updates /etc/group. Processes already running keep
+# their old credential set forever. The user manager is started at boot
+# (or first login) and spawns every per-user service (pipewire, wireplumber,
+# pipewire-pulse) inheriting its credentials. If we added the user to
+# `bluetooth` AFTER user@ started, WirePlumber's BlueZ5 SPA monitor will
+# fail to talk to BlueZ even though /etc/group looks correct.
+#
+# Usage: user_manager_has_group <user> <group_name>
+user_manager_has_group() {
+    local user="$1" group="$2"
+    local gid uid pid
+    gid=$(getent group "$group" | cut -d: -f3 2>/dev/null)
+    uid=$(id -u "$user" 2>/dev/null)
+    [[ -z "$gid" || -z "$uid" ]] && return 1
+    pid=$(systemctl show -p MainPID --value "user@${uid}.service" 2>/dev/null)
+    [[ -z "$pid" || "$pid" == "0" ]] && return 1
+    [[ -r "/proc/${pid}/status" ]] || return 1
+    awk -v g="$gid" '/^Groups:/ {
+        for (i=2; i<=NF; i++) if ($i == g) { found=1; exit }
+    } END { exit found ? 0 : 1 }' "/proc/${pid}/status"
+}
+
 # Wait for a systemd service to become active. Returns 0 on success, 1 on timeout.
 wait_for_active() {
     local svc="$1" max="${2:-15}" is_user="${3:-false}"
@@ -223,17 +248,57 @@ configure_wireplumber() {
         # WirePlumber 0.5+ (SPA JSON config)
         mkdir -p "${WP_CONF_DIR}"
         cat > "${WP_CONF_DIR}/51-soundsync.conf" << 'WPCONF'
-# SoundSync: Enable A2DP sink role so Bluetooth devices can stream audio here
+# SoundSync — WirePlumber 0.5+ A2DP sink config.
+#
+# CRITICAL: monitor.bluez.seat-monitoring = disabled
+#   Stock bluez.lua only calls createMonitor() when WpLogind reports
+#   seat_state == "active", which requires a session bound to a seat
+#   (graphical login or local TTY). SSH-only sessions are "online" but
+#   never "active", so without this override the BlueZ monitor never
+#   starts on a headless box, no A2DP MediaEndpoints are registered,
+#   and connected iOS/Android devices won't expose a Bluetooth audio
+#   sink. This single line is the difference between "pairs but no
+#   audio output" and a working A2DP speaker on Ubuntu 24.04+ /
+#   PipeWire 1.0+ / WirePlumber 0.5+. See bluez.lua line ~640.
+wireplumber.profiles = {
+    main = {
+        monitor.bluez.seat-monitoring = disabled
+    }
+}
+
+# Enable A2DP sink role plus HFP/HSP so phones, headsets, and other
+# A2DP source/sink devices all work. Codec list determines which
+# codecs we advertise to the remote: SBC mandatory, AAC for iOS,
+# LDAC/aptX for Android (require libldacbt-enc2 / libfreeaptx0).
 monitor.bluez.properties = {
-    bluez5.roles = [ a2dp_sink ]
+    bluez5.roles = [ a2dp_sink a2dp_source hfp_hf hfp_ag hsp_hs hsp_ag ]
     bluez5.codecs = [ sbc aac ldac aptx aptx_hd ]
     bluez5.enable-sbc-xq = true
     bluez5.enable-msbc = false
     bluez5.enable-hw-volume = true
-    bluez5.a2dp.opus.pro.channels = 0
 }
 WPCONF
         log "WirePlumber 0.5+ config written to ${WP_CONF_DIR}/51-soundsync.conf"
+
+        # Apply WirePlumber systemd sandbox override. The stock unit ships
+        # with MemoryDenyWriteExecute=yes which blocks libspa-bluez5.so's
+        # codec sub-plugins (LDAC, aptX) from loading because they need
+        # writable+executable memory. Symptom is silent: WP starts, the
+        # bluez monitor logs nothing, no MediaEndpoints get registered.
+        # Without this override the system works "manually" (e.g. running
+        # `wireplumber` from a shell) but NOT under systemd.
+        local WP_OVERRIDE_DIR="${USER_HOME}/.config/systemd/user/wireplumber.service.d"
+        mkdir -p "${WP_OVERRIDE_DIR}"
+        cat > "${WP_OVERRIDE_DIR}/override.conf" << 'WPOVERRIDE'
+# SoundSync: allow libspa-bluez5.so and codec sub-plugins to mmap
+# PROT_WRITE|PROT_EXEC. Without this, BlueZ5 SPA fails to load codec
+# libraries (LDAC, aptX) and the BlueZ monitor silently does nothing.
+[Service]
+MemoryDenyWriteExecute=no
+WPOVERRIDE
+        chown -R "${RUN_USER}:${RUN_USER}" \
+            "${USER_HOME}/.config/systemd" 2>/dev/null || true
+        log "WirePlumber sandbox override written to ${WP_OVERRIDE_DIR}/override.conf"
     else
         # WirePlumber 0.4.x (Lua config)
         # Write to user config dir (preferred)
@@ -482,6 +547,23 @@ create_service() {
     # Ensure user is in audio and bluetooth groups
     usermod -aG audio,bluetooth "${RUN_USER}" 2>/dev/null || true
 
+    # CRITICAL: verify the running user manager actually has the new groups.
+    # usermod only updates /etc/group; processes already running keep their
+    # old supplementary GID list. WirePlumber inherits from user@UID.service
+    # which usually predates this script's invocation. If it lacks the
+    # `bluetooth` group, the WP BlueZ5 SPA monitor silently fails to register
+    # MediaEndpoints with BlueZ — devices pair but expose no audio sink.
+    NEEDS_RELOGIN=false
+    if ! user_manager_has_group "${RUN_USER}" "bluetooth"; then
+        warn "user@$(id -u ${RUN_USER}).service is running WITHOUT the 'bluetooth' group."
+        warn "WirePlumber will not be able to register A2DP MediaEndpoints until this is fixed."
+        NEEDS_RELOGIN=true
+    fi
+    if ! user_manager_has_group "${RUN_USER}" "audio"; then
+        warn "user@$(id -u ${RUN_USER}).service is running WITHOUT the 'audio' group."
+        NEEDS_RELOGIN=true
+    fi
+
     # Configure real-time scheduling limits for audio processes.
     # Without these, PipeWire and parec run at SCHED_OTHER (normal priority)
     # and any system activity can preempt audio threads, causing stuttering.
@@ -633,34 +715,86 @@ main() {
     # Write version file
     echo "${VERSION}" > "${VERSION_FILE}"
 
-    # Restart service if it was running before upgrade
+    # Enable on boot, then start (or restart, if this was an upgrade).
+    # Previously the installer only restarted when SERVICE_WAS_RUNNING=true,
+    # which on a fresh install is always false — leaving the service
+    # installed but never running and not enabled at boot.
+    log "Enabling SoundSync service to start at boot..."
+    systemctl enable soundsync 2>/dev/null \
+        || warn "Could not enable soundsync.service"
+
     if [[ "${SERVICE_WAS_RUNNING:-false}" == "true" ]]; then
         log "Restarting SoundSync service..."
         systemctl start soundsync || warn "Failed to start SoundSync service"
-        if wait_for_active soundsync 15; then
-            log "SoundSync service verified active"
-        else
-            warn "SoundSync service not active — check: systemctl status soundsync"
-            warn "Try running: sudo bash scripts/soundsync-doctor.sh"
-        fi
+    else
+        log "Starting SoundSync service..."
+        systemctl start soundsync || warn "Failed to start SoundSync service"
+    fi
+    if wait_for_active soundsync 15; then
+        log "SoundSync service verified active"
+    else
+        warn "SoundSync service not active — check: systemctl status soundsync"
+        warn "Try running: bash scripts/soundsync-doctor.sh"
+    fi
+
+    # ── Final acceptance check ────────────────────────────────────────────
+    # The installer's job is not just "files copied" but "device is a
+    # functional A2DP sink". Verify by checking BlueZ for a registered
+    # MediaEndpoint owned by WirePlumber. If absent, the install is
+    # incomplete and we surface a clear diagnostic — do NOT report success.
+    log "Verifying BlueZ A2DP sink endpoint registration..."
+    local _RUN_UID
+    _RUN_UID=$(id -u "${SUDO_USER:-$(whoami)}" 2>/dev/null || echo "1000")
+    local _bt_uuids
+    _bt_uuids=$(bluetoothctl show 2>/dev/null | grep -c '0000110b-0000-1000-8000-00805f9b34fb' || echo 0)
+    if [[ "${_bt_uuids:-0}" -gt 0 ]]; then
+        log "Adapter advertises Audio Sink (0x110b) — A2DP sink is live"
+        ACCEPTANCE_OK=true
+    else
+        warn "Adapter does NOT advertise Audio Sink (UUID 0x110b)."
+        warn "WirePlumber's BlueZ5 monitor has not registered any MediaEndpoint."
+        warn "Likely causes (in order):"
+        warn "  1. The systemd user manager was started before the user was"
+        warn "     added to the 'bluetooth'/'audio' groups. Reboot or run:"
+        warn "       sudo loginctl terminate-user ${SUDO_USER:-${USER}}"
+        warn "     and reconnect (this will end the current session)."
+        warn "  2. WirePlumber needs a restart to pick up the new config:"
+        warn "       systemctl --user restart wireplumber"
+        warn "  3. Run the doctor for a full diagnosis and auto-repair:"
+        warn "       bash scripts/soundsync-doctor.sh"
+        ACCEPTANCE_OK=false
     fi
 
     log ""
     log "================================"
-    log "SoundSync v${VERSION} installed successfully!"
+    if [[ "${ACCEPTANCE_OK:-false}" == "true" && "${NEEDS_RELOGIN:-false}" != "true" ]]; then
+        log "SoundSync v${VERSION} installed successfully!"
+    else
+        warn "SoundSync v${VERSION} installed with WARNINGS — see above."
+    fi
     log ""
-    log "Start the service:"
-    log "  sudo systemctl start soundsync"
-    log "  sudo systemctl enable soundsync"
-    log ""
-    log "Check status:"
+    if [[ "${NEEDS_RELOGIN:-false}" == "true" ]]; then
+        warn "================================================================"
+        warn "ACTION REQUIRED: the audio/bluetooth groups were added to your"
+        warn "user, but the running systemd user manager did not pick them up."
+        warn "WirePlumber will NOT be able to register A2DP endpoints until"
+        warn "the user manager restarts with the new group set."
+        warn ""
+        warn "Fix this by EITHER:"
+        warn "  (a) Reboot the machine                         (simplest)"
+        warn "  (b) Run: sudo loginctl terminate-user ${RUN_USER:-${SUDO_USER:-${USER}}}"
+        warn "      then log back in (this ends current sessions)."
+        warn "================================================================"
+        log ""
+    fi
+    log "Service status:"
     log "  sudo systemctl status soundsync"
+    log ""
+    log "Diagnose issues:"
+    log "  bash scripts/soundsync-doctor.sh"
     log ""
     log "Uninstall:"
     log "  sudo bash install.sh --uninstall"
-    log ""
-    log "Diagnose issues:"
-    log "  sudo bash scripts/soundsync-doctor.sh"
     log ""
     log "Web UI available at:"
     log "  http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):8080"
